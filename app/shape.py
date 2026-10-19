@@ -1,29 +1,40 @@
-"""Tolerant readers for Podhome's analytics JSON (its response schema is not published).
-If the dashboard shows wrong numbers, look at /api/raw/<show> and adjust here."""
+"""Turns OP3 JSON into what the page shows. Tolerant where OP3's docs don't pin the format down."""
 import datetime as dt
-import re
 
 NUM = (int, float)
-VAL = ("downloads", "count", "value", "audience", "listeners", "total")
-LAB = ("name", "title", "app", "country", "label", "episode", "date", "day", "period")
-
-
-def find_list(o):
-    if isinstance(o, list) and o and all(isinstance(x, dict) for x in o):
-        return o
-    if isinstance(o, dict):
-        for v in o.values():
-            r = find_list(v)
-            if r:
-                return r
-    return []
+VAL = ("downloads", "count", "value", "total")
+LAB = ("name", "title", "app", "label", "appName", "agentName")
+WINDOWS = ((1, "downloads1", "First 24 hours"), (3, "downloads3", "First 3 days"), (7, "downloads7", "First 7 days"))
 
 
 def _num(v):
     return isinstance(v, NUM) and not isinstance(v, bool)
 
 
-def pair(row):
+def _find_list(o):
+    if isinstance(o, list) and o and all(isinstance(x, dict) for x in o):
+        return o
+    if isinstance(o, dict):
+        for v in o.values():
+            r = _find_list(v)
+            if r:
+                return r
+    return []
+
+
+def _find_map(o):
+    """First dict whose values are all numbers, e.g. {"Apple Podcasts": 123, ...}."""
+    if isinstance(o, dict):
+        if o and all(_num(v) for v in o.values()):
+            return o
+        for v in o.values():
+            r = _find_map(v)
+            if r:
+                return r
+    return {}
+
+
+def _pair(row):
     val = next((row[k] for k in VAL if _num(row.get(k))), None)
     if val is None:
         val = next((v for v in row.values() if _num(v)), 0)
@@ -33,28 +44,13 @@ def pair(row):
     return {"label": lab, "value": val}
 
 
-def rows(payload, limit=None):
-    out = [pair(r) for r in find_list(payload)]
-    return out[:limit] if limit else out
-
-
-def leaves(o, path=""):
-    if isinstance(o, dict):
-        for k, v in o.items():
-            yield from leaves(v, f"{path}.{k}".lower())
-    elif _num(o):
-        yield path, o
-
-
-def totals(overview):
-    """(downloads, listeners) from the overview payload, None when not found."""
-    flat = list(leaves(overview))
-    pick = lambda *words: next((v for p, v in flat if any(w in p for w in words) and "episode" not in p), None)
-    return pick("download"), pick("unique", "listener", "audience")
-
-
-DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-WINDOWS = ((1, "First 24 hours"), (3, "First 3 days"), (7, "First 7 days"))
+def ranked(payload, limit=8):
+    """Label/value rows, biggest first, from a list of dicts or a {label: number} map."""
+    rows = [_pair(r) for r in _find_list(payload)]
+    if not rows:
+        rows = [{"label": k, "value": v} for k, v in _find_map(payload).items()]
+    rows.sort(key=lambda r: r["value"], reverse=True)
+    return rows[:limit]
 
 
 def parse_dt(s):
@@ -65,23 +61,43 @@ def parse_dt(s):
     return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
 
 
-def latest_windows(latest, now=None):
-    """Downloads of the newest episode in its first 1, 3 and 7 days.
-    Podhome returns daily buckets, so "day 1" is the UTC calendar day of the publish date.
-    A window is marked partial until the full time has passed since publishing."""
-    ep = (latest or {}).get("episode")
-    pub = parse_dt(ep.get("publish_date")) if ep else None
-    if pub is None:
-        return None
+def trend(downloads, days=30, today=None):
+    """Daily download counts for the last `days` days, oldest first, zero-filled."""
+    today = today or dt.datetime.now(dt.timezone.utc).date()
+    per_day = (downloads or {}).get("days", {})
+    out = []
+    for i in range(days - 1, -1, -1):
+        d = (today - dt.timedelta(days=i)).isoformat()
+        out.append({"label": d, "value": per_day.get(d, 0)})
+    return out
+
+
+def top_episodes(episodes, limit=8):
+    rows = [{"label": e.get("title") or "Untitled", "value": e["downloads30"]}
+            for e in (episodes or {}).get("episodes", []) if _num(e.get("downloads30"))]
+    rows = [r for r in rows if r["value"] > 0]
+    rows.sort(key=lambda r: r["value"], reverse=True)
+    return rows[:limit]
+
+
+def latest_episode(episodes, now=None):
+    """Newest already-published episode with its downloads in the first 1, 3 and 7 days.
+    A window is marked partial until that much time has passed since publishing."""
     now = now or dt.datetime.now(dt.timezone.utc)
-    by_day = {}
-    for r in rows(latest.get("trend")):
-        m = DATE.match(str(r["label"]))
-        if m:
-            d = dt.date.fromisoformat(m.group())
-            by_day[d] = by_day.get(d, 0) + r["value"]
-    start, out = pub.date(), []
-    for days, label in WINDOWS:
-        total = sum(v for d, v in by_day.items() if 0 <= (d - start).days < days) if by_day else None
-        out.append({"label": label, "value": total, "partial": now < pub + dt.timedelta(days=days)})
-    return {"title": ep.get("title"), "published": pub.isoformat(), "windows": out}
+    best, best_pub = None, None
+    for e in (episodes or {}).get("episodes", []):
+        pub = parse_dt(e.get("pubdate"))
+        if pub and pub <= now and (best_pub is None or pub > best_pub):
+            best, best_pub = e, pub
+    if best is None:
+        return None
+    return {"title": best.get("title"), "published": best_pub.isoformat(),
+            "windows": [{"label": label, "value": best.get(key) if _num(best.get(key)) else None,
+                         "partial": now < best_pub + dt.timedelta(days=days)}
+                        for days, key, label in WINDOWS]}
+
+
+def countries(downloads, limit=8):
+    rows = [{"label": k, "value": v} for k, v in (downloads or {}).get("countries", {}).items()]
+    rows.sort(key=lambda r: r["value"], reverse=True)
+    return rows[:limit]

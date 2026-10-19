@@ -25,6 +25,18 @@ def config():
     return json.loads((DATA / "config.json").read_text())
 
 
+def purge_podhome():
+    """The Podhome integration was removed: delete any snapshots it stored."""
+    c = db()
+    try:
+        n = c.execute("DELETE FROM snapshots WHERE source='podhome'").rowcount
+        c.commit()
+    finally:
+        c.close()
+    if n:
+        log.info("removed %d old Podhome snapshots", n)
+
+
 def latest(c, show, source, kind):
     r = c.execute("SELECT payload FROM snapshots WHERE show=? AND source=? AND kind=? AND ok=1"
                   " ORDER BY id DESC LIMIT 1", (show, source, kind)).fetchone()
@@ -57,7 +69,9 @@ async def loop():
         try:
             every = config().get("interval_hours", 6) * 3600
             c = db()
-            last = c.execute("SELECT MAX(at) FROM snapshots WHERE ok=1").fetchone()[0] or 0
+            # Timed on the "episodes" snapshot, which only exists in the current data format,
+            # so older snapshots left by a previous version trigger an immediate refresh.
+            last = c.execute("SELECT MAX(at) FROM snapshots WHERE ok=1 AND kind='episodes'").fetchone()[0] or 0
             c.close()
             wait = last + every - time.time()
             if wait <= 0:
@@ -72,6 +86,7 @@ async def loop():
 @asynccontextmanager
 async def lifespan(app):
     DATA.mkdir(parents=True, exist_ok=True)
+    purge_podhome()
     task = asyncio.create_task(loop())
     yield
     task.cancel()
@@ -85,23 +100,21 @@ def dashboard():
     cfg, c, shows, newest = config(), db(), [], 0
     try:
         for s in cfg["shows"]:
-            g = lambda src, kind: latest(c, s["name"], src, kind)
-            meta, ov = g("podhome", "show") or {}, g("podhome", "overview")
-            dl, listeners = shape.totals(ov) if ov else (None, None)
-            trend = shape.rows(g("podhome", "trend"))
-            if dl is None and trend:
-                dl = sum(r["value"] for r in trend)
-            dls, op3 = g("op3", "downloads"), None
-            if dls:
-                op3 = {"total": dls["total"], "days": dls["days"], "truncated": dls["truncated"],
-                       "apps": shape.rows(g("op3", "apps"), 8)}
-            shows.append({"name": s["name"], "title": meta.get("title") or s["name"], "image": meta.get("image_url"),
-                          "podhome": {"downloads": dl, "listeners": listeners, "trend": trend[-30:],
-                                      "apps": shape.rows(g("podhome", "apps"), 8),
-                                      "countries": shape.rows(g("podhome", "countries"), 8),
-                                      "episodes": shape.rows(g("podhome", "episodes"), 8)},
-                          "latest": shape.latest_windows(g("podhome", "latest")),
-                          "op3": op3})
+            g = lambda kind: latest(c, s["name"], "op3", kind)
+            info, dls = g("show") or {}, g("downloads")
+            problem = None
+            if not info:
+                r = c.execute("SELECT payload FROM snapshots WHERE show=? AND source='op3' AND kind='show'"
+                              " AND ok=0 ORDER BY id DESC LIMIT 1", (s["name"],)).fetchone()
+                problem = json.loads(r[0]) if r else None
+            shows.append({"name": s["name"], "title": info.get("title") or s["name"],
+                          "image": s.get("image_url") or None, "problem": problem,
+                          "downloads": dls and dls["total"], "listeners": dls and dls["listeners"],
+                          "truncated": bool(dls and dls["truncated"]),
+                          "trend": shape.trend(dls) if dls else [],
+                          "apps": shape.ranked(g("apps")), "countries": shape.countries(dls),
+                          "episodes": shape.top_episodes(g("episodes")),
+                          "latest": shape.latest_episode(g("episodes"))})
         newest = c.execute("SELECT MAX(at) FROM snapshots WHERE ok=1").fetchone()[0] or 0
     finally:
         c.close()

@@ -55,9 +55,17 @@ main() {
 
   mkdir -p data
   [ -f data/config.json ] || { cp config.example.json data/config.json; chmod 600 data/config.json; }
+  if grep -q podhome_api_key data/config.json; then
+    say "Config needs updating"
+    echo "Podhome is no longer used. In $APP_DIR/data/config.json, replace each show's"
+    echo '"podhome_api_key" with "feed_url": "<the show RSS feed URL>" (optional: "image_url").'
+    echo "  nano $APP_DIR/data/config.json"
+    echo "Then run the same install command again. (The running app is unchanged until then.)"
+    exit 0
+  fi
   if grep -q PASTE_ data/config.json; then
     say "One more step"
-    echo "Edit $APP_DIR/data/config.json: set your show names, Podhome API keys and OP3 token."
+    echo "Edit $APP_DIR/data/config.json: set your OP3 token and each show's name and RSS feed URL."
     echo "  nano $APP_DIR/data/config.json"
     echo "Then run the same install command again."
     exit 0

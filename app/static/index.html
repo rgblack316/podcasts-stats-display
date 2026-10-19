@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Podcast stats</title>
 <style>
-:root{--ink:#0f1a24;--line:#243746;--text:#e9f0f5;--mute:#8fa5b5;--signal:#ffb23e;--op3:#5cc8c0}
+:root{--ink:#0f1a24;--line:#243746;--text:#e9f0f5;--mute:#8fa5b5;--signal:#ffb23e}
 *{box-sizing:border-box;margin:0;padding:0}
 html{font-size:calc(100vw / 96);background:var(--ink);color:var(--text);cursor:none}
 body{font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;height:100vh;overflow:hidden;
@@ -20,7 +20,7 @@ h1{font-size:2.4rem;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;te
 .nums{display:flex;flex-direction:column;justify-content:center;gap:1.6rem}
 .nums small{display:block;font-size:1rem;color:var(--mute)}
 .nums b{display:block;font-size:4.4rem;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
-.nums .a b{color:var(--signal)} .nums .o b{color:var(--op3)}
+.nums .a b{color:var(--signal)}
 .wave{display:flex;flex-direction:column;min-height:0;min-width:0}
 svg{flex:1;min-height:0;width:100%}
 .bar{fill:var(--signal);transform-box:fill-box;transform-origin:center;animation:grow .7s ease-out both}
@@ -38,8 +38,9 @@ li{list-style:none;display:grid;grid-template-columns:1fr auto;gap:.2rem 1rem;fo
 li span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 li i{grid-column:1/-1;height:.18rem;background:var(--line);position:relative}
 li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(--signal);opacity:.7}
-.note{font-size:1rem;color:var(--mute)} .warn{color:var(--signal)}
+.note{font-size:1rem;color:var(--mute)}
 .status{position:fixed;right:2.4rem;bottom:.5rem;font-size:.9rem;color:var(--mute)}
+.status.warn{color:var(--signal)}
 @media (prefers-reduced-motion:reduce){.bar{animation:none}}
 </style>
 </head>
@@ -48,7 +49,7 @@ li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(-
 <main class="stage">
   <div class="nums" id="nums"></div>
   <div class="wave"><svg id="wave" viewBox="0 0 1200 300" preserveAspectRatio="none" role="img" aria-label="Daily downloads, last 30 days"></svg>
-    <div class="axis"><span>30 days ago</span><span id="legend"></span><span>Today</span></div>
+    <div class="axis"><span>30 days ago</span><span>Today</span></div>
     <div class="latest" id="latest" hidden><div><small id="lsub"></small><div class="t" id="lt"></div></div><div class="w" id="lw"></div></div></div>
 </main>
 <section class="lists" id="lists"></section>
@@ -60,7 +61,7 @@ const $ = id => document.getElementById(id);
 const fmt = n => n == null ? "–" : Math.round(n).toLocaleString();
 function h(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 
-function stat(cls, label, value) { const d = h("div", cls); d.append(h("small", "", label), h("b", "", fmt(value))); return d; }
+function stat(cls, label, value, pre) { const d = h("div", cls); d.append(h("small", "", label), h("b", "", (value == null ? "" : pre || "") + fmt(value))); return d; }
 
 function list(title, rows) {
   const s = h("div"); s.append(h("h2", "", title));
@@ -75,32 +76,29 @@ function list(title, rows) {
 
 function wave(show) {
   const svg = $("wave"); svg.replaceChildren();
-  const ph = show.podhome.trend.map(r => r.value), op3 = [];
-  if (show.op3) for (let i = 29; i >= 0; i--) { const d = new Date(Date.now() - i * 864e5).toISOString().slice(0, 10); op3.push(show.op3.days[d] || 0); }
-  const n = Math.max(ph.length, 1), max = Math.max(...ph, ...op3, 1), w = 1200 / n;
-  ph.forEach((v, i) => {
+  const vals = show.trend.map(r => r.value);
+  const n = Math.max(vals.length, 1), max = Math.max(...vals, 1), w = 1200 / n;
+  vals.forEach((v, i) => {
     const r = document.createElementNS(NS, "rect"), hh = Math.max(v / max * 140, 2);
     r.setAttribute("class", "bar"); r.setAttribute("x", i * w + w * .2); r.setAttribute("width", w * .6);
     r.setAttribute("y", 150 - hh); r.setAttribute("height", hh * 2); r.setAttribute("rx", 3);
     r.style.animationDelay = (i * 18) + "ms"; svg.append(r);
   });
-  if (op3.length) {
-    const line = document.createElementNS(NS, "polyline"), step = 1200 / op3.length;
-    line.setAttribute("points", op3.map((v, i) => `${i * step + step / 2},${150 - v / max * 140}`).join(" "));
-    line.setAttribute("fill", "none"); line.setAttribute("stroke", "#5cc8c0"); line.setAttribute("stroke-width", 3);
-    line.setAttribute("vector-effect", "non-scaling-stroke"); svg.append(line);
-  }
-  $("legend").textContent = show.op3 ? "Bars: Podhome   Line: OP3" : "Podhome";
 }
+
+let regionNames = null;
+try { regionNames = new Intl.DisplayNames(["en"], { type: "region" }); } catch (e) {}
+const country = c => { try { return (regionNames && regionNames.of(c)) || c; } catch (e) { return c; } };
 
 function render() {
   if (!data || !data.shows.length) return;
-  const s = data.shows[idx % data.shows.length], p = s.podhome;
+  const s = data.shows[idx % data.shows.length];
   $("title").textContent = s.title;
   const art = $("art"); art.hidden = !s.image; if (s.image) art.src = s.image;
   $("pager").replaceChildren(...data.shows.map((x, i) => h("span", i === idx % data.shows.length ? "on" : "", x.name)));
-  $("nums").replaceChildren(stat("a", "Podhome downloads, 30 days", p.downloads),
-    stat("", "Unique listeners", p.listeners), stat("o", "OP3 downloads, 30 days", s.op3 && s.op3.total));
+  const more = s.truncated ? "\u2265 " : "";
+  $("nums").replaceChildren(stat("a", "Downloads, 30 days", s.downloads, more),
+    stat("", "Unique listeners, 30 days", s.listeners, more));
   wave(s);
   const L = s.latest; $("latest").hidden = !L;
   if (L) {
@@ -108,11 +106,13 @@ function render() {
     $("lt").textContent = L.title || "Untitled";
     $("lw").replaceChildren(...L.windows.map(w => stat("", w.label + (w.partial ? ", so far" : ""), w.value)));
   }
-  $("lists").replaceChildren(list("Top episodes", p.episodes), list("Podcast apps", p.apps), list("Countries", p.countries));
+  $("lists").replaceChildren(list("Top episodes, 30 days", s.episodes), list("Podcast apps, 3 months", s.apps),
+    list("Countries, 30 days", s.countries.map(r => ({ label: country(r.label), value: r.value }))));
   const age = Date.now() / 1000 - data.updated, stale = !data.updated || age > data.interval_hours * 7200;
   const st = $("status");
-  st.className = "status" + (stale || failed ? " warn" : "");
+  st.className = "status" + (stale || failed || s.problem ? " warn" : "");
   st.textContent = failed ? "Can't reach the stats server. Retrying." :
+    s.problem ? s.name + ": " + s.problem :
     stale ? "Data is out of date. Check the server logs." :
     "Updated " + new Date(data.updated * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
 }
