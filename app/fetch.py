@@ -1,9 +1,13 @@
 """Pulls data from OP3 for one show. Returns a list of (source, kind, ok, payload)."""
 import base64, datetime as dt, logging
+import xml.etree.ElementTree as ET
 
 log = logging.getLogger("stats.fetch")
 OP3 = "https://op3.dev/api/1"
 MAX_PAGES = 20
+MAX_FEED_BYTES = 20_000_000
+ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
+UA = {"User-Agent": "podcasts-stats-display/1.0"}
 PAGE_SIZE = 10000
 
 
@@ -11,6 +15,24 @@ async def get(client, url, **kw):
     r = await client.get(url, **kw)
     r.raise_for_status()
     return r.json()
+
+
+def feed_image(xml_bytes):
+    """Channel cover art URL from an RSS feed: <itunes:image href>, else <image><url>. None if absent."""
+    channel = ET.fromstring(xml_bytes).find("channel")
+    if channel is None:
+        return None
+    candidates = [(e.get("href") or "").strip() for e in channel.findall(ITUNES + "image")]
+    candidates += [(e.text or "").strip() for e in channel.findall("image/url")]
+    return next((u for u in candidates if u.lower().startswith(("http://", "https://"))), None)
+
+
+async def feed_info(client, feed_url):
+    r = await client.get(feed_url, headers=UA, follow_redirects=True)
+    r.raise_for_status()
+    if len(r.content) > MAX_FEED_BYTES:
+        raise ValueError("feed is too large")
+    return {"image": feed_image(r.content)}
 
 
 async def op3_downloads(client, uuid, headers):
@@ -46,17 +68,18 @@ async def op3_downloads(client, uuid, headers):
 async def fetch_show(client, show, op3_token):
     out = []
 
-    async def run(kind, fn):
+    async def run(source, kind, fn):
         try:
-            out.append(("op3", kind, 1, await fn()))
+            out.append((source, kind, 1, await fn()))
         except Exception as e:
-            log.warning("%s op3/%s failed: %s", show["name"], kind, e)
-            out.append(("op3", kind, 0, str(e)))
+            log.warning("%s %s/%s failed: %s", show["name"], source, kind, e)
+            out.append((source, kind, 0, str(e)))
 
-    if not op3_token:
-        return [("op3", "show", 0, "op3_token is missing in config.json")]
     if not show.get("feed_url"):
         return [("op3", "show", 0, "feed_url is missing in config.json")]
+    await run("feed", "info", lambda: feed_info(client, show["feed_url"]))
+    if not op3_token:
+        return out + [("op3", "show", 0, "op3_token is missing in config.json")]
 
     h = {"Authorization": "Bearer " + op3_token}
     key = base64.urlsafe_b64encode(show["feed_url"].encode()).decode().rstrip("=")
@@ -65,10 +88,10 @@ async def fetch_show(client, show, op3_token):
         uuid = info["showUuid"]
     except Exception as e:
         log.warning("%s op3/show failed: %s", show["name"], e)
-        return [("op3", "show", 0, f"OP3 lookup failed: {e}")]
+        return out + [("op3", "show", 0, f"OP3 lookup failed: {e}")]
     out.append(("op3", "show", 1, info))
 
-    await run("downloads", lambda: op3_downloads(client, uuid, h))
-    await run("episodes", lambda: get(client, f"{OP3}/queries/episode-download-counts", params={"showUuid": uuid}, headers=h))
-    await run("apps", lambda: get(client, f"{OP3}/queries/top-apps-for-show", params={"showUuid": uuid}, headers=h))
+    await run("op3", "downloads", lambda: op3_downloads(client, uuid, h))
+    await run("op3", "episodes", lambda: get(client, f"{OP3}/queries/episode-download-counts", params={"showUuid": uuid}, headers=h))
+    await run("op3", "apps", lambda: get(client, f"{OP3}/queries/top-apps-for-show", params={"showUuid": uuid}, headers=h))
     return out

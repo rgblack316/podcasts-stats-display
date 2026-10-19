@@ -45,7 +45,7 @@ li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(-
 </style>
 </head>
 <body>
-<header><img id="art" alt=""><h1 id="title"></h1><div class="pager" id="pager"></div></header>
+<header><img id="art" alt="" referrerpolicy="no-referrer"><h1 id="title"></h1><div class="pager" id="pager"></div></header>
 <main class="stage">
   <div class="nums" id="nums"></div>
   <div class="wave"><svg id="wave" viewBox="0 0 1200 300" preserveAspectRatio="none" role="img" aria-label="Daily downloads, last 30 days"></svg>
@@ -94,7 +94,8 @@ function render() {
   if (!data || !data.shows.length) return;
   const s = data.shows[idx % data.shows.length];
   $("title").textContent = s.title;
-  const art = $("art"); art.hidden = !s.image; if (s.image) art.src = s.image;
+  const art = $("art"); art.onerror = () => { art.hidden = true; };
+  art.hidden = !s.image; if (s.image) art.src = s.image; else art.removeAttribute("src");
   $("pager").replaceChildren(...data.shows.map((x, i) => h("span", i === idx % data.shows.length ? "on" : "", x.name)));
   const more = s.truncated ? "\u2265 " : "";
   $("nums").replaceChildren(stat("a", "Downloads, 30 days", s.downloads, more),

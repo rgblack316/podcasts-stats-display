@@ -58,7 +58,7 @@ main() {
   if grep -q podhome_api_key data/config.json; then
     say "Config needs updating"
     echo "Podhome is no longer used. In $APP_DIR/data/config.json, replace each show's"
-    echo '"podhome_api_key" with "feed_url": "<the show RSS feed URL>" (optional: "image_url").'
+    echo '"podhome_api_key" with "feed_url": "<the show RSS feed URL>".'
     echo "  nano $APP_DIR/data/config.json"
     echo "Then run the same install command again. (The running app is unchanged until then.)"
     exit 0

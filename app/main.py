@@ -108,7 +108,8 @@ def dashboard():
                               " AND ok=0 ORDER BY id DESC LIMIT 1", (s["name"],)).fetchone()
                 problem = json.loads(r[0]) if r else None
             shows.append({"name": s["name"], "title": info.get("title") or s["name"],
-                          "image": s.get("image_url") or None, "problem": problem,
+                          "image": s.get("image_url") or (latest(c, s["name"], "feed", "info") or {}).get("image"),
+                          "problem": problem,
                           "downloads": dls and dls["total"], "listeners": dls and dls["listeners"],
                           "truncated": bool(dls and dls["truncated"]),
                           "trend": shape.trend(dls) if dls else [],
