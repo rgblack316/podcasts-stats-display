@@ -7,6 +7,7 @@ OP3 = "https://op3.dev/api/1"
 MAX_PAGES = 20
 MAX_FEED_BYTES = 20_000_000
 ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
+PODCAST_NS = ("https://podcastindex.org/namespace/1.0", "http://podcastindex.org/namespace/1.0")
 UA = {"User-Agent": "podcasts-stats-display/1.0"}
 PAGE_SIZE = 10000
 
@@ -17,12 +18,44 @@ async def get(client, url, **kw):
     return r.json()
 
 
+def _is_square(ratio):
+    """True when a podcast:image aspect-ratio ("1/1", "1:1", "1") is square; absent means square."""
+    if not ratio:
+        return True
+    try:
+        parts = [float(x) for x in ratio.replace(":", "/").replace(" ", "").split("/")]
+        return len(parts) in (1, 2) and abs(parts[0] / (parts[1] if len(parts) == 2 else 1) - 1) < 0.01
+    except (ValueError, ZeroDivisionError):
+        return False
+
+
+def _podcast_images(channel):
+    """href of each channel-level <podcast:image> that is plain square show artwork, in feed order.
+    Skips banners, social, canvas, circular-only, publisher logos, posters and video."""
+    out = []
+    for e in channel:
+        if not isinstance(e.tag, str) or not e.tag.startswith("{"):
+            continue
+        uri, _, local = e.tag[1:].partition("}")
+        if local != "image" or uri not in PODCAST_NS:
+            continue
+        purpose = (e.get("purpose") or "").lower().split()
+        mime = (e.get("type") or "").lower()
+        if (purpose and "artwork" not in purpose) or not _is_square(e.get("aspect-ratio")) \
+                or (mime and not mime.startswith("image/")):
+            continue
+        out.append((e.get("href") or "").strip())
+    return out
+
+
 def feed_image(xml_bytes):
-    """Channel cover art URL from an RSS feed: <itunes:image href>, else <image><url>. None if absent."""
+    """Show cover art URL from an RSS feed, or None. Tries <itunes:image href>, then a square
+    <podcast:image>, then <image><url>, so a feed missing one namespace still yields art."""
     channel = ET.fromstring(xml_bytes).find("channel")
     if channel is None:
         return None
     candidates = [(e.get("href") or "").strip() for e in channel.findall(ITUNES + "image")]
+    candidates += _podcast_images(channel)
     candidates += [(e.text or "").strip() for e in channel.findall("image/url")]
     return next((u for u in candidates if u.lower().startswith(("http://", "https://"))), None)
 
