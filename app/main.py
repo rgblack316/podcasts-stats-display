@@ -100,6 +100,7 @@ def dashboard():
                                       "apps": shape.rows(g("podhome", "apps"), 8),
                                       "countries": shape.rows(g("podhome", "countries"), 8),
                                       "episodes": shape.rows(g("podhome", "episodes"), 8)},
+                          "latest": shape.latest_windows(g("podhome", "latest")),
                           "op3": op3})
         newest = c.execute("SELECT MAX(at) FROM snapshots WHERE ok=1").fetchone()[0] or 0
     finally:
