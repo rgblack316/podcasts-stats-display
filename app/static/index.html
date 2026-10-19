@@ -47,7 +47,7 @@ li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(-
 <section class="lists" id="lists"></section>
 <div class="status" id="status"></div>
 <script>
-const NS = "http://www.w3.org/2000/svg", ROTATE_MS = 30000, RELOAD_MS = 300000;
+const NS = "http://www.w3.org/2000/svg", ROTATE_MS = 60000, RELOAD_MS = 900000;
 let data = null, idx = 0, failed = false;
 const $ = id => document.getElementById(id);
 const fmt = n => n == null ? "–" : Math.round(n).toLocaleString();
