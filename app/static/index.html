@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Podcast stats</title>
+<style>
+:root{--ink:#0f1a24;--line:#243746;--text:#e9f0f5;--mute:#8fa5b5;--signal:#ffb23e;--op3:#5cc8c0}
+*{box-sizing:border-box;margin:0}
+html{font-size:calc(100vw / 96);background:var(--ink);color:var(--text);cursor:none}
+body{font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;height:100vh;overflow:hidden;
+  padding:1.6rem 2.4rem;display:grid;grid-template-rows:auto 1fr auto;gap:1.4rem}
+header{display:flex;align-items:center;gap:1.2rem}
+header img{width:4rem;height:4rem;border-radius:.5rem;object-fit:cover}
+h1{font-size:2.4rem;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pager{display:flex;gap:.6rem}
+.pager span{font-size:1rem;color:var(--mute);padding:.25rem .8rem;border:1px solid var(--line);border-radius:2rem}
+.pager .on{color:var(--ink);background:var(--signal);border-color:var(--signal)}
+.stage{display:grid;grid-template-columns:15rem 1fr;gap:2rem;min-height:0}
+.nums{display:flex;flex-direction:column;justify-content:center;gap:1.6rem}
+.nums small{display:block;font-size:1rem;color:var(--mute)}
+.nums b{display:block;font-size:4.4rem;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
+.nums .a b{color:var(--signal)} .nums .o b{color:var(--op3)}
+.wave{display:flex;flex-direction:column;min-height:0}
+svg{flex:1;min-height:0;width:100%}
+.bar{fill:var(--signal);transform-box:fill-box;transform-origin:center;animation:grow .7s ease-out both}
+@keyframes grow{from{transform:scaleY(0)}}
+.axis{display:flex;justify-content:space-between;font-size:.95rem;color:var(--mute);margin-top:.4rem}
+.lists{display:grid;grid-template-columns:repeat(3,1fr);gap:2.4rem}
+h2{font-size:1.15rem;font-weight:500;color:var(--mute);padding-bottom:.4rem;border-bottom:1px solid var(--line);margin-bottom:.4rem}
+li{list-style:none;display:grid;grid-template-columns:1fr auto;gap:.2rem 1rem;font-size:1.15rem;padding:.25rem 0}
+li span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+li i{grid-column:1/-1;height:.18rem;background:var(--line);position:relative}
+li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(--signal);opacity:.7}
+.note{font-size:1rem;color:var(--mute)} .warn{color:var(--signal)}
+.status{position:fixed;right:2.4rem;bottom:.5rem;font-size:.9rem;color:var(--mute)}
+@media (prefers-reduced-motion:reduce){.bar{animation:none}}
+</style>
+</head>
+<body>
+<header><img id="art" alt=""><h1 id="title"></h1><div class="pager" id="pager"></div></header>
+<main class="stage">
+  <div class="nums" id="nums"></div>
+  <div class="wave"><svg id="wave" viewBox="0 0 1200 300" preserveAspectRatio="none" role="img" aria-label="Daily downloads, last 30 days"></svg>
+    <div class="axis"><span>30 days ago</span><span id="legend"></span><span>Today</span></div></div>
+</main>
+<section class="lists" id="lists"></section>
+<div class="status" id="status"></div>
+<script>
+const NS = "http://www.w3.org/2000/svg", ROTATE_MS = 30000, RELOAD_MS = 300000;
+let data = null, idx = 0, failed = false;
+const $ = id => document.getElementById(id);
+const fmt = n => n == null ? "–" : Math.round(n).toLocaleString();
+function h(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+function stat(cls, label, value) { const d = h("div", cls); d.append(h("small", "", label), h("b", "", fmt(value))); return d; }
+
+function list(title, rows) {
+  const s = h("div"); s.append(h("h2", "", title));
+  if (!rows.length) { s.append(h("p", "note", "No data yet")); return s; }
+  const ul = h("ul"), max = Math.max(...rows.map(r => r.value), 1);
+  for (const r of rows) {
+    const li = h("li"); li.append(h("span", "", r.label), h("span", "", fmt(r.value)));
+    const bar = h("i"); bar.style.setProperty("--w", (r.value / max * 100) + "%"); li.append(bar); ul.append(li);
+  }
+  s.append(ul); return s;
+}
+
+function wave(show) {
+  const svg = $("wave"); svg.replaceChildren();
+  const ph = show.podhome.trend.map(r => r.value), op3 = [];
+  if (show.op3) for (let i = 29; i >= 0; i--) { const d = new Date(Date.now() - i * 864e5).toISOString().slice(0, 10); op3.push(show.op3.days[d] || 0); }
+  const n = Math.max(ph.length, 1), max = Math.max(...ph, ...op3, 1), w = 1200 / n;
+  ph.forEach((v, i) => {
+    const r = document.createElementNS(NS, "rect"), hh = Math.max(v / max * 140, 2);
+    r.setAttribute("class", "bar"); r.setAttribute("x", i * w + w * .2); r.setAttribute("width", w * .6);
+    r.setAttribute("y", 150 - hh); r.setAttribute("height", hh * 2); r.setAttribute("rx", 3);
+    r.style.animationDelay = (i * 18) + "ms"; svg.append(r);
+  });
+  if (op3.length) {
+    const line = document.createElementNS(NS, "polyline"), step = 1200 / op3.length;
+    line.setAttribute("points", op3.map((v, i) => `${i * step + step / 2},${150 - v / max * 140}`).join(" "));
+    line.setAttribute("fill", "none"); line.setAttribute("stroke", "#5cc8c0"); line.setAttribute("stroke-width", 3);
+    line.setAttribute("vector-effect", "non-scaling-stroke"); svg.append(line);
+  }
+  $("legend").textContent = show.op3 ? "Bars: Podhome   Line: OP3" : "Podhome";
+}
+
+function render() {
+  if (!data || !data.shows.length) return;
+  const s = data.shows[idx % data.shows.length], p = s.podhome;
+  $("title").textContent = s.title;
+  const art = $("art"); art.hidden = !s.image; if (s.image) art.src = s.image;
+  $("pager").replaceChildren(...data.shows.map((x, i) => h("span", i === idx % data.shows.length ? "on" : "", x.name)));
+  $("nums").replaceChildren(stat("a", "Podhome downloads, 30 days", p.downloads),
+    stat("", "Unique listeners", p.listeners), stat("o", "OP3 downloads, 30 days", s.op3 && s.op3.total));
+  wave(s);
+  $("lists").replaceChildren(list("Top episodes", p.episodes), list("Podcast apps", p.apps), list("Countries", p.countries));
+  const age = Date.now() / 1000 - data.updated, stale = !data.updated || age > data.interval_hours * 7200;
+  const st = $("status");
+  st.className = "status" + (stale || failed ? " warn" : "");
+  st.textContent = failed ? "Can't reach the stats server. Retrying." :
+    stale ? "Data is out of date. Check the server logs." :
+    "Updated " + new Date(data.updated * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+}
+
+async function load() {
+  try { const r = await fetch("/api/dashboard"); if (!r.ok) throw 0; data = await r.json(); failed = false; }
+  catch (e) { failed = true; }
+  render();
+}
+load(); setInterval(load, RELOAD_MS); setInterval(() => { idx++; render(); }, ROTATE_MS);
+</script>
+</body>
+</html>

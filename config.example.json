@@ -1,0 +1,9 @@
+{
+  "interval_hours": 6,
+  "op3_token": "PASTE_OP3_TOKEN_HERE",
+  "shows": [
+    {"name": "Show One",   "podhome_api_key": "PASTE_PODHOME_KEY_HERE"},
+    {"name": "Show Two",   "podhome_api_key": "PASTE_PODHOME_KEY_HERE"},
+    {"name": "Show Three", "podhome_api_key": "PASTE_PODHOME_KEY_HERE"}
+  ]
+}
