@@ -73,7 +73,8 @@ def trend(downloads, days=30, today=None):
 
 
 def top_episodes(episodes, limit=8):
-    rows = [{"label": e.get("title") or "Untitled", "value": e["downloads30"]}
+    rows = [{"label": e.get("title") or "Untitled", "value": e["downloads30"],
+             "lifetime": e["downloadsAll"] if _num(e.get("downloadsAll")) else None}
             for e in (episodes or {}).get("episodes", []) if _num(e.get("downloads30"))]
     rows = [r for r in rows if r["value"] > 0]
     rows.sort(key=lambda r: r["value"], reverse=True)
@@ -91,10 +92,21 @@ def latest_episode(episodes, now=None):
             best, best_pub = e, pub
     if best is None:
         return None
-    return {"title": best.get("title"), "published": best_pub.isoformat(),
-            "windows": [{"label": label, "value": best.get(key) if _num(best.get(key)) else None,
-                         "partial": now < best_pub + dt.timedelta(days=days)}
-                        for days, key, label in WINDOWS]}
+    windows = [{"label": label, "value": best.get(key) if _num(best.get(key)) else None,
+                "partial": now < best_pub + dt.timedelta(days=days)} for days, key, label in WINDOWS]
+    windows.append({"label": "Lifetime", "value": best["downloadsAll"] if _num(best.get("downloadsAll")) else None,
+                    "partial": False})
+    return {"title": best.get("title"), "published": best_pub.isoformat(), "windows": windows}
+
+
+def lifetime(state, recent):
+    """Show lifetime downloads: everything before the 30-day window (the saved running total) plus the
+    last 30 days. `approx` is True when the saved total is unfinished or out of step with the 30-day
+    window, or the 30-day fetch was cut short, so the real figure is at least this."""
+    if not state or not recent:
+        return None
+    exact = state.get("complete") and state.get("through") == recent.get("since") and not recent.get("truncated")
+    return {"value": state["total"] + recent["total"], "approx": not exact}
 
 
 def countries(downloads, limit=8):

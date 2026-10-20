@@ -16,10 +16,10 @@ h1{font-size:2.4rem;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;te
 .pager{display:flex;gap:.6rem}
 .pager span{font-size:1rem;color:var(--mute);padding:.25rem .8rem;border:1px solid var(--line);border-radius:2rem}
 .pager .on{color:var(--ink);background:var(--signal);border-color:var(--signal)}
-.stage{display:grid;grid-template-columns:15rem minmax(0,1fr);gap:2rem;min-height:0}
-.nums{display:flex;flex-direction:column;justify-content:center;gap:1.6rem}
+.stage{display:grid;grid-template-columns:17rem minmax(0,1fr);gap:2rem;min-height:0}
+.nums{display:flex;flex-direction:column;justify-content:center;gap:1.4rem;min-width:0}
 .nums small{display:block;font-size:1rem;color:var(--mute)}
-.nums b{display:block;font-size:4.4rem;font-weight:600;line-height:1;font-variant-numeric:tabular-nums}
+.nums b{display:block;font-size:3.6rem;font-weight:600;line-height:1;white-space:nowrap;font-variant-numeric:tabular-nums}
 .nums .a b{color:var(--signal)}
 .wave{display:flex;flex-direction:column;min-height:0;min-width:0}
 svg{flex:1;min-height:0;width:100%}
@@ -32,10 +32,13 @@ svg{flex:1;min-height:0;width:100%}
 .latest .t{font-size:1.5rem;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .latest .w{display:flex;gap:2.4rem}
 .latest .w b{display:block;font-size:2.2rem;font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums}
+.all{color:var(--mute);font-size:.9rem;min-width:7.4rem;text-align:right}
 .lists{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2.4rem}
 h2{font-size:1.15rem;font-weight:500;color:var(--mute);padding-bottom:.4rem;border-bottom:1px solid var(--line);margin-bottom:.4rem}
 li{list-style:none;display:grid;grid-template-columns:1fr auto;gap:.2rem 1rem;font-size:1.15rem;padding:.25rem 0}
+li{font-variant-numeric:tabular-nums}
 li span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+li span:nth-child(2){display:flex;justify-content:flex-end;align-items:baseline;gap:.9rem}
 li i{grid-column:1/-1;height:.18rem;background:var(--line);position:relative}
 li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(--signal);opacity:.7}
 .note{font-size:1rem;color:var(--mute)}
@@ -68,7 +71,9 @@ function list(title, rows) {
   if (!rows.length) { s.append(h("p", "note", "No data yet")); return s; }
   const ul = h("ul"), max = Math.max(...rows.map(r => r.value), 1);
   for (const r of rows) {
-    const li = h("li"); li.append(h("span", "", r.label), h("span", "", fmt(r.value)));
+    const right = h("span", "", fmt(r.value));
+    if (r.lifetime != null) right.append(h("small", "all", fmt(r.lifetime) + " lifetime"));
+    const li = h("li"); li.append(h("span", "", r.label), right);
     const bar = h("i"); bar.style.setProperty("--w", (r.value / max * 100) + "%"); li.append(bar); ul.append(li);
   }
   s.append(ul); return s;
@@ -90,6 +95,14 @@ let regionNames = null;
 try { regionNames = new Intl.DisplayNames(["en"], { type: "region" }); } catch (e) {}
 const country = c => { try { return (regionNames && regionNames.of(c)) || c; } catch (e) { return c; } };
 
+function fit() {
+  for (const b of document.querySelectorAll(".nums b")) {
+    b.style.fontSize = "";
+    let px = parseFloat(getComputedStyle(b).fontSize);
+    while (b.scrollWidth > b.clientWidth && px > 24) { px -= 2; b.style.fontSize = px + "px"; }
+  }
+}
+
 function render() {
   if (!data || !data.shows.length) return;
   const s = data.shows[idx % data.shows.length];
@@ -99,8 +112,9 @@ function render() {
   $("pager").replaceChildren(...data.shows.map((x, i) => h("span", i === idx % data.shows.length ? "on" : "", x.name)));
   const more = s.truncated ? "\u2265 " : "";
   $("nums").replaceChildren(stat("a", "Downloads, 30 days", s.downloads, more),
-    stat("", "Unique listeners, 30 days", s.listeners, more));
-  wave(s);
+    stat("", "Unique listeners, 30 days", s.listeners, more),
+    stat("", "Lifetime downloads", s.lifetime && s.lifetime.value, s.lifetime && s.lifetime.approx ? "\u2265 " : ""));
+  fit(); wave(s);
   const L = s.latest; $("latest").hidden = !L;
   if (L) {
     $("lsub").textContent = "Latest episode, published " + new Date(L.published).toLocaleDateString([], { month: "short", day: "numeric" });

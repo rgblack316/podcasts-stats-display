@@ -10,6 +10,9 @@ ITUNES = "{http://www.itunes.com/dtds/podcast-1.0.dtd}"
 PODCAST_NS = ("https://podcastindex.org/namespace/1.0", "http://podcastindex.org/namespace/1.0")
 UA = {"User-Agent": "podcasts-stats-display/1.0"}
 PAGE_SIZE = 10000
+BACKFILL_PAGE_SIZE = 20000   # the API maximum
+MAX_BACKFILL_PAGES = 500      # per one-month window
+OP3_EPOCH = dt.date(2022, 9, 1)  # OP3 launched in September 2022
 
 
 def describe(e):
@@ -104,13 +107,12 @@ async def feed_info(client, feed_url):
     return {"image": feed_image(r.content)}
 
 
-async def op3_downloads(client, uuid, headers):
-    """Last 30 days of downloads, tallied per day and per country, plus distinct listeners."""
-    start = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)).strftime("%Y-%m-%d")
+async def op3_downloads(client, uuid, headers, since):
+    """Downloads from `since` (a date) until now, tallied per day and per country, plus distinct listeners."""
     days, countries, listeners = {}, {}, set()
     total, token, truncated = 0, None, False
     for _ in range(MAX_PAGES):
-        params = {"start": start, "format": "json", "limit": str(PAGE_SIZE)}
+        params = {"start": since.isoformat(), "format": "json", "limit": str(PAGE_SIZE)}
         if token:
             params["continuationToken"] = token
         d = await get(client, f"{OP3}/downloads/show/{uuid}", params=params, headers=headers)
@@ -130,11 +132,64 @@ async def op3_downloads(client, uuid, headers):
             break
     else:
         truncated = True
-    return {"total": total, "days": days, "countries": countries,
+    return {"total": total, "days": days, "countries": countries, "since": since.isoformat(),
             "listeners": len(listeners), "truncated": truncated}
 
 
-async def fetch_show(client, show, op3_token):
+def next_month(d):
+    return (d.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
+
+
+async def count_rows(client, uuid, headers, start, end):
+    """Number of downloads in [start, end) (date strings; start inclusive, end exclusive)."""
+    count, token = 0, None
+    for _ in range(MAX_BACKFILL_PAGES):
+        params = {"start": start, "end": end, "format": "json", "limit": str(BACKFILL_PAGE_SIZE)}
+        if token:
+            params["continuationToken"] = token
+        d = await get(client, f"{OP3}/downloads/show/{uuid}", params=params, headers=headers)
+        count += len(d.get("rows", []) if isinstance(d, dict) else d)
+        token = d.get("continuationToken") if isinstance(d, dict) else None
+        if not token:
+            return count
+    raise RuntimeError(f"more than {MAX_BACKFILL_PAGES * BACKFILL_PAGE_SIZE} downloads between {start} and {end}")
+
+
+async def first_download_date(client, uuid, headers, before):
+    params = {"start": OP3_EPOCH.isoformat(), "end": before.isoformat(), "format": "json", "limit": "1"}
+    d = await get(client, f"{OP3}/downloads/show/{uuid}", params=params, headers=headers)
+    rows = d.get("rows", []) if isinstance(d, dict) else d
+    return dt.date.fromisoformat(str(rows[0]["time"])[:10]) if rows else None
+
+
+async def op3_lifetime(client, uuid, headers, prev, cutoff):
+    """Running total of every download BEFORE `cutoff`. Counts one month at a time, starting from the
+    show's first download, or resuming from `prev` ({"total", "through"}), so a later poll only counts
+    the days that have just left the 30-day window. If it fails part-way, the progress is kept
+    ("complete": False) and the next poll carries on."""
+    try:
+        total, through = int(prev["total"]), dt.date.fromisoformat(prev["through"])
+    except (TypeError, KeyError, ValueError):
+        total, through = 0, None
+    if through is None:
+        first = await first_download_date(client, uuid, headers, cutoff)
+        if first is None:
+            return {"total": 0, "through": cutoff.isoformat(), "complete": True}
+        through = first.replace(day=1)
+    started = through
+    try:
+        while through < cutoff:
+            nxt = min(next_month(through), cutoff)
+            total += await count_rows(client, uuid, headers, through.isoformat(), nxt.isoformat())
+            through = nxt
+    except Exception:
+        if through == started:
+            raise
+        log.warning("lifetime backfill stopped at %s with %d counted; will resume", through, total, exc_info=True)
+    return {"total": total, "through": through.isoformat(), "complete": through >= cutoff}
+
+
+async def fetch_show(client, show, op3_token, prev_lifetime=None):
     out = []
 
     async def run(source, kind, fn):
@@ -161,7 +216,9 @@ async def fetch_show(client, show, op3_token):
         return out + [("op3", "show", 0, f"OP3 lookup failed: {describe(e)}")]
     out.append(("op3", "show", 1, info))
 
-    await run("op3", "downloads", lambda: op3_downloads(client, uuid, h))
+    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)).date()
+    await run("op3", "downloads", lambda: op3_downloads(client, uuid, h, since))
+    await run("op3", "lifetime", lambda: op3_lifetime(client, uuid, h, prev_lifetime, since))
     await run("op3", "episodes", lambda: get(client, f"{OP3}/queries/episode-download-counts", params={"showUuid": uuid}, headers=h))
     await run("op3", "apps", lambda: get(client, f"{OP3}/queries/top-apps-for-show", params={"showUuid": uuid}, headers=h))
     return out

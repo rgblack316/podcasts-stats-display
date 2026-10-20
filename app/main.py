@@ -49,7 +49,12 @@ async def refresh():
         cfg, good = config(), 0
         async with httpx.AsyncClient(timeout=60) as client:
             for s in cfg["shows"]:
-                res = await fetch.fetch_show(client, s, cfg.get("op3_token", ""))
+                c = db()
+                try:
+                    prev = latest(c, s["name"], "op3", "lifetime")
+                finally:
+                    c.close()
+                res = await fetch.fetch_show(client, s, cfg.get("op3_token", ""), prev)
                 now = int(time.time())
                 c = db()
                 try:
@@ -64,20 +69,37 @@ async def refresh():
         return good
 
 
+def backfill_pending(c, cfg):
+    """True while any show's lifetime total is still being counted up from its first download."""
+    return any((latest(c, s["name"], "op3", "lifetime") or {}).get("complete") is False for s in cfg["shows"])
+
+
 async def loop():
     while True:
         try:
-            every = config().get("interval_hours", 6) * 3600
+            cfg = config()
+            every = cfg.get("interval_hours", 6) * 3600
             c = db()
-            # Timed on the "episodes" snapshot, which only exists in the current data format,
-            # so older snapshots left by a previous version trigger an immediate refresh.
-            last = c.execute("SELECT MAX(at) FROM snapshots WHERE ok=1 AND kind='episodes'").fetchone()[0] or 0
-            c.close()
-            wait = last + every - time.time()
-            if wait <= 0:
-                await asyncio.sleep(every if await refresh() else 1800)
+            try:
+                # Timed on the "lifetime" snapshot, which only exists in the current data format,
+                # so data left by an older version triggers an immediate refresh.
+                last = c.execute("SELECT MAX(at) FROM snapshots WHERE ok=1 AND kind='lifetime'").fetchone()[0] or 0
+                pending = backfill_pending(c, cfg)
+            finally:
+                c.close()
+            due = last + every - time.time()
+            if pending:
+                due = min(due, last + 600 - time.time())  # an unfinished backfill resumes after 10 minutes
+            if due > 0:
+                await asyncio.sleep(max(due, 60))
                 continue
-            await asyncio.sleep(max(wait, 60))
+            good = await refresh()
+            c = db()
+            try:
+                pending = backfill_pending(c, cfg)
+            finally:
+                c.close()
+            await asyncio.sleep(600 if pending else every if good else 1800)
         except Exception:
             log.exception("refresh loop error (is data/config.json in place?)")
             await asyncio.sleep(600)
@@ -111,6 +133,7 @@ def dashboard():
                           "image": s.get("image_url") or (latest(c, s["name"], "feed", "info") or {}).get("image"),
                           "problem": problem,
                           "downloads": dls and dls["total"], "listeners": dls and dls["listeners"],
+                          "lifetime": shape.lifetime(g("lifetime"), dls),
                           "truncated": bool(dls and dls["truncated"]),
                           "trend": shape.trend(dls) if dls else [],
                           "apps": shape.ranked(g("apps")), "countries": shape.countries(dls),

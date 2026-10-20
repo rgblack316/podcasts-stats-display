@@ -16,4 +16,17 @@ Polls OP3 every 6 hours and shows each podcast in rotation on a kiosk screen.
 
 **Checking data:** `http://<vm-ip>:8080/api/raw/<Show Name>` shows the raw API responses;
 `curl -X POST http://<vm-ip>:8080/api/refresh` fetches now; `sudo docker compose logs -f` for logs.
+Lifetime downloads: the first poll counts the show's whole history one month at a time and saves a running total; later polls add only the days leaving the 30-day window (a few polls' worth of progress is kept if one fails). Episode lifetime figures are OP3's own `downloadsAll`.
+
+To recount the show lifetime totals from scratch (the saved running total is otherwise trusted), run this on the server:
+```bash
+sudo docker compose exec -T stats python - <<'EOF'
+import sqlite3
+c = sqlite3.connect("/data/stats.db")
+c.execute("DELETE FROM snapshots WHERE kind='lifetime'")
+c.commit()
+EOF
+sudo docker compose restart
+```
+
 How OP3's responses are turned into the page's numbers is in `app/shape.py`.
