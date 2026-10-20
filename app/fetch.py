@@ -12,6 +12,42 @@ UA = {"User-Agent": "podcasts-stats-display/1.0"}
 PAGE_SIZE = 10000
 
 
+def describe(e):
+    """Short, readable error text (httpx's own message is long and ends with a docs link)."""
+    r = getattr(e, "response", None)
+    if r is not None:
+        try:
+            body = " ".join((r.text or "").split())[:160]
+        except Exception:
+            body = ""
+        return f"HTTP {r.status_code}" + (f": {body}" if body else "")
+    return (str(e) or type(e).__name__)[:200]
+
+
+def is_url(ident):
+    return ident.lower().startswith(("http://", "https://"))
+
+
+def lookup_keys(ident):
+    """What goes after /shows/ in the OP3 API: a feed URL as urlsafe base64 (tried without, then
+    with, "=" padding, since the docs don't say which), or a podcast:guid / OP3 show ID as is."""
+    if not is_url(ident):
+        return [ident]
+    b64 = base64.urlsafe_b64encode(ident.encode()).decode()
+    return [b64.rstrip("="), b64] if b64.endswith("=") else [b64]
+
+
+async def lookup_show(client, ident, headers):
+    keys = lookup_keys(ident)
+    for i, key in enumerate(keys):
+        try:
+            return await get(client, f"{OP3}/shows/{key}", headers=headers)
+        except Exception as e:
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if i == len(keys) - 1 or status != 400:
+                raise
+
+
 async def get(client, url, **kw):
     r = await client.get(url, **kw)
     r.raise_for_status()
@@ -105,23 +141,24 @@ async def fetch_show(client, show, op3_token):
         try:
             out.append((source, kind, 1, await fn()))
         except Exception as e:
-            log.warning("%s %s/%s failed: %s", show["name"], source, kind, e)
-            out.append((source, kind, 0, str(e)))
+            log.warning("%s %s/%s failed: %s", show["name"], source, kind, describe(e))
+            out.append((source, kind, 0, describe(e)))
 
-    if not show.get("feed_url"):
+    ident = (show.get("feed_url") or "").strip()
+    if not ident:
         return [("op3", "show", 0, "feed_url is missing in config.json")]
-    await run("feed", "info", lambda: feed_info(client, show["feed_url"]))
+    if is_url(ident):  # cover art is read from the feed, which needs its web address
+        await run("feed", "info", lambda: feed_info(client, ident))
     if not op3_token:
         return out + [("op3", "show", 0, "op3_token is missing in config.json")]
 
     h = {"Authorization": "Bearer " + op3_token}
-    key = base64.urlsafe_b64encode(show["feed_url"].encode()).decode().rstrip("=")
     try:
-        info = await get(client, f"{OP3}/shows/{key}", headers=h)
+        info = await lookup_show(client, ident, h)
         uuid = info["showUuid"]
     except Exception as e:
-        log.warning("%s op3/show failed: %s", show["name"], e)
-        return out + [("op3", "show", 0, f"OP3 lookup failed: {e}")]
+        log.warning("%s op3/show failed: %s", show["name"], describe(e))
+        return out + [("op3", "show", 0, f"OP3 lookup failed: {describe(e)}")]
     out.append(("op3", "show", 1, info))
 
     await run("op3", "downloads", lambda: op3_downloads(client, uuid, h))

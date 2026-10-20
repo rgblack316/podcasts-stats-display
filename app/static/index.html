@@ -39,7 +39,7 @@ li span:first-child{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 li i{grid-column:1/-1;height:.18rem;background:var(--line);position:relative}
 li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(--signal);opacity:.7}
 .note{font-size:1rem;color:var(--mute)}
-.status{position:fixed;right:2.4rem;bottom:.5rem;font-size:.9rem;color:var(--mute)}
+.status{position:fixed;right:2.4rem;bottom:.5rem;max-width:65vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.9rem;color:var(--mute)}
 .status.warn{color:var(--signal)}
 @media (prefers-reduced-motion:reduce){.bar{animation:none}}
 </style>
@@ -116,6 +116,7 @@ function render() {
     s.problem ? s.name + ": " + s.problem :
     stale ? "Data is out of date. Check the server logs." :
     "Updated " + new Date(data.updated * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+  st.title = st.textContent;
 }
 
 async function load() {
