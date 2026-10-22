@@ -5,7 +5,8 @@
 #
 # It installs git and Docker if missing, clones (or updates) the repository, and
 # builds and starts the app. Safe to re-run: re-running pulls the latest code and
-# rebuilds. Your data/ folder (config.json and stats.db) is never touched.
+# rebuilds. Your data/ folder (config.json, stats.db, settings password) is never touched.
+# Shows and settings are managed on the app's /settings page.
 #
 # Optional environment variables: INSTALL_DIR (default ~/podcasts-stats-display),
 # BRANCH (default main), REPO_URL.
@@ -55,26 +56,31 @@ main() {
 
   mkdir -p data
   [ -f data/config.json ] || { cp config.example.json data/config.json; chmod 600 data/config.json; }
-  if grep -q podhome_api_key data/config.json; then
-    say "Config needs updating"
-    echo "Podhome is no longer used. In $APP_DIR/data/config.json, replace each show's"
-    echo '"podhome_api_key" with "feed_url": "<the show RSS feed URL>".'
-    echo "  nano $APP_DIR/data/config.json"
-    echo "Then run the same install command again. (The running app is unchanged until then.)"
-    exit 0
-  fi
-  if grep -q PASTE_ data/config.json; then
-    say "One more step"
-    echo "Edit $APP_DIR/data/config.json: set your OP3 token and each show's name and RSS feed URL."
-    echo "  nano $APP_DIR/data/config.json"
-    echo "Then run the same install command again."
-    exit 0
-  fi
 
   say "Building and starting"
   $SUDO docker compose up -d --build </dev/null
   $SUDO docker image prune -f >/dev/null </dev/null
-  say "Running. Dashboard: http://$(hostname -I 2>/dev/null | awk '{print $1}'):8080"
+
+  local IP URL CODE="" i
+  IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  URL="http://${IP:-<server-ip>}:8080"
+  say "Running. Dashboard: $URL"
+  # Until a password is chosen, the app keeps a one-time setup code in data/setup-code.txt.
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    CODE="$($SUDO cat data/setup-code.txt 2>/dev/null || true)"
+    [ -n "$CODE" ] && break
+    $SUDO docker compose exec -T stats test -f /data/admin.json </dev/null 2>/dev/null && break
+    sleep 2
+  done
+  echo
+  echo "Settings page (add shows, artwork, polling, OP3 token): $URL/settings"
+  if [ -n "$CODE" ]; then
+    echo "First visit: enter this one-time setup code, then choose a password:"
+    echo
+    echo "    $CODE"
+    echo
+    echo "(Shown again with:  sudo cat $APP_DIR/data/setup-code.txt)"
+  fi
 }
 
 main "$@"

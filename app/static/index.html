@@ -42,6 +42,12 @@ li span:nth-child(2){display:flex;justify-content:flex-end;align-items:baseline;
 li i{grid-column:1/-1;height:.18rem;background:var(--line);position:relative}
 li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(--signal);opacity:.7}
 .note{font-size:1rem;color:var(--mute)}
+.issues{grid-row:2/4;align-self:start;max-width:80rem}
+.issues[hidden],.stage[hidden],.lists[hidden]{display:none}
+.issues h2{font-size:1.6rem;color:var(--signal);border:0;margin-bottom:1rem}
+.issues li{display:block;font-size:1.3rem;line-height:1.35;padding:.45rem 0}
+.issues li b{font-weight:600}
+.issues p{font-size:1.2rem;color:var(--mute);margin-top:1.4rem}
 .status{position:fixed;right:2.4rem;bottom:.5rem;max-width:65vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.9rem;color:var(--mute)}
 .status.warn{color:var(--signal)}
 @media (prefers-reduced-motion:reduce){.bar{animation:none}}
@@ -56,10 +62,11 @@ li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(-
     <div class="latest" id="latest" hidden><div><small id="lsub"></small><div class="t" id="lt"></div></div><div class="w" id="lw"></div></div></div>
 </main>
 <section class="lists" id="lists"></section>
+<section class="issues" id="issues" hidden></section>
 <div class="status" id="status"></div>
 <script>
-const NS = "http://www.w3.org/2000/svg", ROTATE_MS = 60000, RELOAD_MS = 900000;
-let data = null, idx = 0, failed = false;
+const NS = "http://www.w3.org/2000/svg";
+let data = null, idx = 0, failed = false, timers = {};
 const $ = id => document.getElementById(id);
 const fmt = n => n == null ? "–" : Math.round(n).toLocaleString();
 function h(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
@@ -103,13 +110,36 @@ function fit() {
   }
 }
 
+const errors = () => (data.config_problems || []).filter(p => p.level === "error");
+const slideCount = () => data.shows.length + (errors().length || !data.shows.length ? 1 : 0);
+
+function renderIssues(n) {
+  const errs = errors(), box = $("issues");
+  $("title").textContent = "Setup needed"; $("art").hidden = true;
+  $("pager").replaceChildren(...data.shows.map(x => h("span", "", x.name)), h("span", "on", "Setup"));
+  box.replaceChildren(h("h2", "", errs.length ? "These settings need fixing" : "No shows yet"));
+  if (errs.length) {
+    const ul = h("ul");
+    for (const p of errs) { const li = h("li"); if (p.show) li.append(h("b", "", p.show + ": ")); li.append(p.message); ul.append(li); }
+    box.append(ul);
+  }
+  box.append(h("p", "", "Open http://" + location.host + "/settings to fix this."));
+  const st = $("status"); st.className = "status warn"; st.textContent = "Showing the shows that are set up correctly"; st.title = "";
+  if (!data.shows.length) st.textContent = "";
+}
+
 function render() {
-  if (!data || !data.shows.length) return;
-  const s = data.shows[idx % data.shows.length];
+  if (!data) return;
+  const n = slideCount();
+  if (!n) return;
+  const onIssues = idx % n === data.shows.length;
+  document.querySelector(".stage").hidden = onIssues; $("lists").hidden = onIssues; $("issues").hidden = !onIssues;
+  if (onIssues) return renderIssues(n);
+  const s = data.shows[idx % n];
   $("title").textContent = s.title;
   const art = $("art"); art.onerror = () => { art.hidden = true; };
   art.hidden = !s.image; if (s.image) art.src = s.image; else art.removeAttribute("src");
-  $("pager").replaceChildren(...data.shows.map((x, i) => h("span", i === idx % data.shows.length ? "on" : "", x.name)));
+  $("pager").replaceChildren(...data.shows.map((x, i) => h("span", i === idx % n ? "on" : "", x.name)).concat(n > data.shows.length ? [h("span", "", "Setup")] : []));
   const more = s.truncated ? "\u2265 " : "";
   $("nums").replaceChildren(stat("a", "Downloads, 30 days", s.downloads, more),
     stat("", "Unique listeners, 30 days", s.listeners, more),
@@ -136,9 +166,16 @@ function render() {
 async function load() {
   try { const r = await fetch("/api/dashboard"); if (!r.ok) throw 0; data = await r.json(); failed = false; }
   catch (e) { failed = true; }
-  render();
+  schedule(); render();
 }
-load(); setInterval(load, RELOAD_MS); setInterval(() => { idx++; render(); }, ROTATE_MS);
+
+// How long each show stays up, and how often data is re-read, come from the settings page.
+function schedule() {
+  const slide = ((data && data.slide_seconds) || 60) * 1000, reload = ((data && data.reload_minutes) || 15) * 60000;
+  if (timers.slide !== slide) { clearInterval(timers.slideId); timers.slide = slide; timers.slideId = setInterval(() => { idx++; render(); }, slide); }
+  if (timers.reload !== reload) { clearInterval(timers.reloadId); timers.reload = reload; timers.reloadId = setInterval(load, reload); }
+}
+load();
 </script>
 </body>
 </html>

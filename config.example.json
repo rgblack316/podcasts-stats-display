@@ -1,9 +1,7 @@
 {
   "interval_hours": 6,
-  "op3_token": "PASTE_OP3_TOKEN_HERE",
-  "shows": [
-    {"name": "Show One",   "feed_url": "PASTE_FEED_URL_HERE"},
-    {"name": "Show Two",   "feed_url": "PASTE_FEED_URL_HERE"},
-    {"name": "Show Three", "feed_url": "PASTE_FEED_URL_HERE"}
-  ]
+  "slide_seconds": 60,
+  "reload_minutes": 15,
+  "op3_token": "",
+  "shows": []
 }

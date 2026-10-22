@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Podcast stats settings</title>
+<style>
+:root{--ink:#0f1a24;--panel:#16232f;--line:#243746;--text:#e9f0f5;--mute:#8fa5b5;--signal:#ffb23e;--bad:#ff7b72;--good:#6fd39a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ink);color:var(--text);font:16px/1.45 "Avenir Next","Segoe UI",system-ui,sans-serif}
+main{max-width:56rem;margin:0 auto;padding:1.2rem 1rem 6rem}
+h1{font-size:1.5rem;margin:.4rem 0 1rem;font-weight:600}
+h2{font-size:1.1rem;margin:0 0 .8rem;font-weight:600}
+p{margin:.3rem 0}
+.mute{color:var(--mute);font-size:.9rem}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:.6rem;padding:1rem;margin-bottom:1rem}
+label{display:block;font-size:.85rem;color:var(--mute);margin:.7rem 0 .2rem}
+input[type=text],input[type=password],input[type=number],input[type=url]{width:100%;padding:.55rem .65rem;background:var(--ink);color:var(--text);border:1px solid var(--line);border-radius:.4rem;font:inherit}
+input:focus,button:focus-visible{outline:2px solid var(--signal);outline-offset:1px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:0 1rem}
+button{font:inherit;padding:.5rem .9rem;border-radius:.4rem;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer}
+button:hover{border-color:var(--mute)}
+button.primary{background:var(--signal);color:#1a1200;border-color:var(--signal);font-weight:600}
+button.danger{color:var(--bad)}
+button:disabled{opacity:.5;cursor:default}
+.row{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;margin-top:.8rem}
+.row.end{justify-content:flex-end}
+.show-head{display:flex;gap:.5rem;align-items:center;justify-content:space-between}
+.show-head h2{margin:0}
+.msg{margin:.3rem 0;padding:.5rem .7rem;border-radius:.4rem;border:1px solid var(--line);font-size:.92rem}
+.msg.error{border-color:var(--bad);color:var(--bad)}
+.msg.warning{border-color:var(--signal);color:var(--signal)}
+.msg.good{border-color:var(--good);color:var(--good)}
+.tests div{margin:.2rem 0;font-size:.92rem}
+.ok{color:var(--good)}.no{color:var(--bad)}.na{color:var(--mute)}
+.art{display:flex;gap:1rem;align-items:flex-start;flex-wrap:wrap}
+.art .now{width:6rem;height:6rem;border-radius:.5rem;background:var(--ink);border:1px solid var(--line);object-fit:cover;flex:none}
+.thumbs{display:flex;gap:.5rem;flex-wrap:wrap;margin:.3rem 0}
+.thumbs button{padding:0;width:3.6rem;height:3.6rem;border-radius:.4rem;overflow:hidden}
+.thumbs button.sel{outline:3px solid var(--signal)}
+.thumbs img{width:100%;height:100%;object-fit:cover;display:block}
+.bar{position:fixed;left:0;right:0;bottom:0;background:var(--panel);border-top:1px solid var(--line);padding:.7rem 1rem}
+.bar>div{max-width:56rem;margin:0 auto;display:flex;gap:.6rem;align-items:center;flex-wrap:wrap}
+.bar .grow{flex:1;min-width:8rem}
+.narrow{max-width:26rem;margin:2rem auto}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main id="app"><p class="mute">Loading…</p></main>
+<div class="bar" id="bar" hidden><div>
+  <span class="grow mute" id="dirty"></span>
+  <button id="refresh">Refresh data now</button>
+  <button class="primary" id="save">Save changes</button>
+</div></div>
+<script>
+"use strict";
+const app = document.getElementById("app");
+let csrf = null, state = null, dirty = false, banner = [];
+
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "class") e.className = v; else if (k.startsWith("on")) e[k] = v; else if (v === true) e.setAttribute(k, ""); else if (v !== false && v != null) e.setAttribute(k, v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(k));
+  return e;
+}
+
+async function api(method, path, body, raw) {
+  const opts = { method, headers: {}, credentials: "same-origin" };
+  if (csrf) opts.headers["X-CSRF-Token"] = csrf;
+  if (raw) { opts.headers["Content-Type"] = raw.type; opts.body = raw; }
+  else if (body !== undefined) { opts.headers["Content-Type"] = "application/json"; opts.body = JSON.stringify(body); }
+  let r;
+  try { r = await fetch(path, opts); } catch (e) { throw { status: 0, message: "Can't reach the server." }; }
+  let data = null; try { data = await r.json(); } catch (e) {}
+  if (!r.ok) {
+    if (r.status === 401 && path !== "/api/admin/login") { csrf = null; showAuth(true); }
+    const detail = data && (data.detail || data.message);
+    throw { status: r.status, data, message: typeof detail === "string" ? detail : "Something went wrong (" + r.status + ")" };
+  }
+  return data;
+}
+
+// ---- sign in / first-time setup ------------------------------------------------------------
+async function boot() {
+  try {
+    const s = await api("GET", "/api/admin/state");
+    csrf = s.csrf;
+    if (s.signed_in) return load();
+    showAuth(s.configured);
+  } catch (e) { app.replaceChildren(h("div", { class: "msg error" }, e.message)); }
+}
+
+function showAuth(configured, note) {
+  document.getElementById("bar").hidden = true;
+  const err = h("div", { class: "msg error", hidden: true });
+  const pw = h("input", { type: "password", autocomplete: configured ? "current-password" : "new-password", autofocus: true });
+  const code = h("input", { type: "text", autocomplete: "off", placeholder: "XXXX-XXXX-XXXX", autocapitalize: "characters" });
+  const pw2 = h("input", { type: "password", autocomplete: "new-password" });
+  const go = async ev => {
+    ev.preventDefault(); err.hidden = true;
+    try {
+      if (!configured && pw.value !== pw2.value) throw { message: "The two passwords don't match." };
+      const r = configured ? await api("POST", "/api/admin/login", { password: pw.value })
+                           : await api("POST", "/api/admin/setup", { code: code.value, password: pw.value });
+      csrf = r.csrf; load();
+    } catch (e) { err.textContent = e.message; err.hidden = false; }
+  };
+  app.replaceChildren(h("form", { class: "card narrow", onsubmit: go },
+    h("h1", {}, configured ? "Sign in" : "Set up settings"),
+    note ? h("div", { class: "msg warning" }, note) : null,
+    configured ? null : h("p", { class: "mute" }, "Enter the setup code printed when the app was installed, then choose a password. To see the code again, run: sudo docker compose logs | grep \"SETUP CODE\" (in the podcasts-stats-display folder)."),
+    configured ? null : [h("label", {}, "Setup code"), code],
+    h("label", {}, configured ? "Password" : "Choose a password (at least 8 characters)"), pw,
+    configured ? null : [h("label", {}, "Repeat password"), pw2],
+    err, h("div", { class: "row" }, h("button", { class: "primary", type: "submit" }, configured ? "Sign in" : "Save password and continue"))));
+}
+
+// ---- main page -------------------------------------------------------------------------------
+async function load(keepBanner) {
+  try {
+    const c = await api("GET", "/api/admin/config");
+    state = c; state.tokenInput = "";
+    state.shows.forEach(s => { s._tests = null; s._busy = false; });
+    if (!keepBanner) banner = [];
+    dirty = false; render();
+  } catch (e) { if (e.status !== 401) app.replaceChildren(h("div", { class: "msg error" }, e.message)); }
+}
+
+function markDirty() {
+  dirty = true; document.getElementById("dirty").textContent = "Unsaved changes";
+}
+
+function field(label, value, onInput, opts) {
+  const i = h("input", Object.assign({ type: "text", value: value ?? "" }, opts));
+  i.oninput = () => { onInput(i.value); markDirty(); };
+  return h("div", {}, h("label", {}, label), i);
+}
+
+function numField(label, value, onInput, lim, placeholder) {
+  return field(label, value, v => onInput(v === "" ? null : Number(v)),
+    { type: "number", min: lim[0], max: lim[1], step: "any", placeholder: placeholder || "" });
+}
+
+function problemList(list) {
+  return list.map(p => h("div", { class: "msg " + (p.level === "error" ? "error" : p.level === "ok" ? "good" : "warning") }, (p.show ? p.show + ": " : "") + p.message));
+}
+
+function showCard(s, i) {
+  const set = (k, v) => { s[k] = v; };
+  const lim = state.limits.interval_hours;
+  const testBox = h("div", { class: "tests" });
+  const drawTests = () => testBox.replaceChildren(...(s._tests || []).map(t => h("div", { class: t.ok === true ? "ok" : t.ok === false ? "no" : "na" }, (t.ok === true ? "✓ " : t.ok === false ? "✗ " : "– ") + t.message)));
+  drawTests();
+  const test = h("button", {}, "Test connection");
+  test.onclick = async () => {
+    test.disabled = true; test.textContent = "Testing…";
+    try {
+      const r = await api("POST", "/api/admin/test", { feed_url: s.feed_url, op3_token: state.tokenInput });
+      s._tests = [{ ok: r.feed.ok, message: r.feed.message }, { ok: r.op3.ok, message: r.op3.message }];
+      if (r.feed.images && r.feed.images.length) { s.feed_images = r.feed.images; draw(); }
+    } catch (e) { s._tests = [{ ok: false, message: e.message }]; }
+    test.disabled = false; test.textContent = "Test connection"; drawTests();
+  };
+
+  const artBox = h("div");
+  const draw = () => {
+    const effective = s.image_url || (s.feed_images && s.feed_images[0]) || "";
+    const now = h("img", { class: "now", alt: "Current artwork", referrerpolicy: "no-referrer" });
+    if (effective) now.src = effective; else now.style.visibility = "hidden";
+    now.onerror = () => { now.style.visibility = "hidden"; };
+    const thumbs = h("div", { class: "thumbs" },
+      (s.feed_images || []).map(u => {
+        const b = h("button", { type: "button", title: u, class: s.image_url === u ? "sel" : "" }, h("img", { src: u, alt: "", referrerpolicy: "no-referrer" }));
+        b.onclick = () => { s.image_url = u; markDirty(); draw(); };
+        return b;
+      }));
+    const url = h("input", { type: "url", placeholder: "https://… (leave empty for automatic)", value: s.image_url && !s.image_url.startsWith("/art/") ? s.image_url : "" });
+    url.oninput = () => { s.image_url = url.value.trim(); markDirty(); };
+    url.onchange = draw;
+    const file = h("input", { type: "file", accept: "image/png,image/jpeg,image/gif,image/webp" });
+    const up = h("div", { class: "mute" });
+    file.onchange = async () => {
+      const f = file.files[0]; if (!f) return;
+      up.textContent = "Uploading…";
+      try { const r = await api("POST", "/api/admin/art", undefined, f); s.image_url = r.url; markDirty(); draw(); }
+      catch (e) { up.textContent = e.message; }
+    };
+    const auto = h("button", { type: "button" }, "Use automatic artwork");
+    auto.onclick = () => { s.image_url = ""; markDirty(); draw(); };
+    artBox.replaceChildren(h("div", { class: "art" }, now, h("div", { style: "flex:1;min-width:14rem" },
+      h("div", { class: "mute" }, s.image_url ? (s.image_url.startsWith("/art/") ? "Using an uploaded image" : "Using a chosen image") : "Automatic: the cover art in the show's feed"),
+      (s.feed_images && s.feed_images.length) ? [h("label", {}, "Art found in the feed"), thumbs] : h("p", { class: "mute" }, "Use Test connection to list the art found in the feed."),
+      h("label", {}, "Or paste an image address"), url,
+      h("label", {}, "Or upload an image (PNG, JPEG, GIF or WebP, up to 5 MB)"), file, up,
+      s.image_url ? h("div", { class: "row" }, auto) : null)));
+  };
+  draw();
+
+  const up = h("button", { type: "button", title: "Move up", disabled: i === 0 }, "↑");
+  const dn = h("button", { type: "button", title: "Move down", disabled: i === state.shows.length - 1 }, "↓");
+  up.onclick = () => move(i, -1); dn.onclick = () => move(i, 1);
+  const rm = h("button", { type: "button", class: "danger" }, "Remove");
+  rm.onclick = () => {
+    if (confirm("Remove “" + (s.name || "this show") + "”? Its stored statistics are deleted when you save.")) { state.shows.splice(i, 1); markDirty(); render(); }
+  };
+  const status = s.updated ? "Last updated " + new Date(s.updated * 1000).toLocaleString() : (s.id && !s._new ? "No data yet" : "Not saved yet");
+  return h("section", { class: "card" },
+    h("div", { class: "show-head" }, h("h2", {}, s.name || "New show"), h("div", { class: "row", style: "margin:0" }, up, dn, rm)),
+    h("p", { class: "mute" }, status + (s.error ? " · Last problem: " + s.error : "")),
+    h("div", { class: "grid" },
+      field("Display name", s.name, v => set("name", v)),
+      numField("Poll every (hours, blank = " + state.settings.interval_hours + ")", s.interval_hours, v => set("interval_hours", v), lim)),
+    field("RSS feed URL (or podcast GUID / OP3 show ID)", s.feed_url, v => set("feed_url", v), { placeholder: "https://example.com/feed.xml" }),
+    h("label", {}, "Artwork"), artBox,
+    h("div", { class: "row" }, test), testBox);
+}
+
+function move(i, d) { const [s] = state.shows.splice(i, 1); state.shows.splice(i + d, 0, s); markDirty(); render(); }
+
+function render() {
+  document.getElementById("bar").hidden = false;
+  document.getElementById("dirty").textContent = dirty ? "Unsaved changes" : "";
+  const L = state.limits;
+  const tokenIn = h("input", { type: "password", autocomplete: "off", placeholder: state.token_set ? "Saved (" + state.token_hint + "). Type to replace." : "Paste your OP3 API token" });
+  tokenIn.oninput = () => { state.tokenInput = tokenIn.value; markDirty(); };
+  const add = h("button", { type: "button" }, "+ Add a show");
+  add.onclick = () => { state.shows.push({ id: "", name: "", feed_url: "", image_url: "", interval_hours: null, feed_images: [], _new: true }); markDirty(); render(); window.scrollTo(0, document.body.scrollHeight); };
+  const pwBtn = h("button", { type: "button" }, "Change password"), outBtn = h("button", { type: "button" }, "Sign out");
+  pwBtn.onclick = changePassword;
+  outBtn.onclick = async () => { try { await api("POST", "/api/admin/logout", {}); } catch (e) {} csrf = null; boot(); };
+  const shown = banner.length ? banner : state.problems;
+  const items = [
+    h("h1", {}, "Podcast stats settings"),
+    shown.length ? h("div", {}, problemList(shown)) : null,
+    h("section", { class: "card" }, h("h2", {}, "General"),
+      h("label", {}, "OP3 API token"), tokenIn,
+      h("p", { class: "mute" }, "Create one at https://op3.dev/api/keys. It is stored in data/config.json on the server."),
+      h("div", { class: "grid" },
+        numField("Poll OP3 every (hours)", state.settings.interval_hours, v => { state.settings.interval_hours = v; }, L.interval_hours, state.defaults.interval_hours),
+        numField("Seconds each show stays on screen", state.settings.slide_seconds, v => { state.settings.slide_seconds = v; }, L.slide_seconds, state.defaults.slide_seconds),
+        numField("Page re-reads data every (minutes)", state.settings.reload_minutes, v => { state.settings.reload_minutes = v; }, L.reload_minutes, state.defaults.reload_minutes))),
+    ...state.shows.map(showCard),
+    h("div", { class: "row" }, add),
+    h("div", { class: "row end" }, pwBtn, outBtn)];
+  app.replaceChildren(...items.filter(Boolean));
+}
+
+async function changePassword() {
+  const old = prompt("Current password:"); if (old == null) return;
+  const nw = prompt("New password (at least 8 characters):"); if (nw == null) return;
+  try { const r = await api("POST", "/api/admin/password", { old, new: nw }); csrf = r.csrf; banner = [{ level: "ok", message: "Password changed.", show: null }]; render(); }
+  catch (e) { banner = [{ level: "error", message: e.message, show: null }]; render(); }
+}
+
+async function save() {
+  const btn = document.getElementById("save"); btn.disabled = true;
+  const cfg = {
+    interval_hours: state.settings.interval_hours, slide_seconds: state.settings.slide_seconds, reload_minutes: state.settings.reload_minutes,
+    op3_token: state.tokenInput,
+    shows: state.shows.map(s => ({ id: s.id || undefined, name: s.name, feed_url: s.feed_url, image_url: s.image_url || undefined, interval_hours: s.interval_hours }))
+  };
+  try {
+    const r = await api("PUT", "/api/admin/config", { config: cfg, version: state.version });
+    await load(true);
+    banner = [{ level: "ok", message: "Saved. The display picks up the changes at its next refresh.", show: null }, ...r.problems];
+    render();
+  } catch (e) {
+    const d = e.data;
+    banner = d && d.problems ? d.problems : [{ level: "error", message: e.message, show: null }];
+    if (d && d.problems) banner = [{ level: "error", message: "Not saved. Fix the following and try again:", show: null }, ...d.problems];
+    if (d && d.version) state.version = d.version;
+    render(); window.scrollTo(0, 0);
+  }
+  btn.disabled = false;
+}
+
+document.getElementById("save").onclick = save;
+document.getElementById("refresh").onclick = async () => {
+  if (dirty && !confirm("Refresh uses the saved settings, not your unsaved changes. Continue?")) return;
+  try { await api("POST", "/api/admin/refresh", {}); banner = [{ level: "ok", message: "Refresh started. New numbers appear within a minute or two (the first count of lifetime downloads can take longer).", show: null }]; }
+  catch (e) { banner = [{ level: "error", message: e.message, show: null }]; }
+  render(); window.scrollTo(0, 0);
+};
+window.addEventListener("beforeunload", e => { if (dirty) { e.preventDefault(); e.returnValue = ""; } });
+boot();
+</script>
+</body>
+</html>

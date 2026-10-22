@@ -87,24 +87,76 @@ def _podcast_images(channel):
     return out
 
 
-def feed_image(xml_bytes):
-    """Show cover art URL from an RSS feed, or None. Tries <itunes:image href>, then a square
-    <podcast:image>, then <image><url>, so a feed missing one namespace still yields art."""
+def feed_candidates(xml_bytes):
+    """{"title", "images"}: the feed's title and every usable cover-art URL, best first (itunes:image,
+    then square podcast:image, then <image><url>), without duplicates."""
     channel = ET.fromstring(xml_bytes).find("channel")
     if channel is None:
-        return None
-    candidates = [(e.get("href") or "").strip() for e in channel.findall(ITUNES + "image")]
-    candidates += _podcast_images(channel)
-    candidates += [(e.text or "").strip() for e in channel.findall("image/url")]
-    return next((u for u in candidates if u.lower().startswith(("http://", "https://"))), None)
+        return {"title": None, "images": []}
+    found = [(e.get("href") or "").strip() for e in channel.findall(ITUNES + "image")]
+    found += _podcast_images(channel)
+    found += [(e.text or "").strip() for e in channel.findall("image/url")]
+    images = []
+    for u in found:
+        if u.lower().startswith(("http://", "https://")) and u not in images:
+            images.append(u)
+    title = (channel.findtext("title") or "").strip() or None
+    return {"title": title, "images": images}
 
 
-async def feed_info(client, feed_url):
+def feed_image(xml_bytes):
+    """Show cover art URL from an RSS feed, or None. A feed missing one namespace still yields art."""
+    return next(iter(feed_candidates(xml_bytes)["images"]), None)
+
+
+async def read_feed(client, feed_url):
     r = await client.get(feed_url, headers=UA, follow_redirects=True)
     r.raise_for_status()
     if len(r.content) > MAX_FEED_BYTES:
         raise ValueError("feed is too large")
-    return {"image": feed_image(r.content)}
+    try:
+        return feed_candidates(r.content)
+    except ET.ParseError:
+        raise ValueError("the address loads, but it is not an RSS feed")
+
+
+async def feed_info(client, feed_url):
+    found = await read_feed(client, feed_url)
+    return {"image": next(iter(found["images"]), None), "images": found["images"]}
+
+
+async def test_show(client, ident, op3_token):
+    """Checks one show end to end for the settings page: the feed, the OP3 token and OP3's record of
+    the show. Each part is {"ok", "message", ...}; nothing is stored."""
+    out = {}
+    if is_url(ident):
+        try:
+            found = await read_feed(client, ident)
+            n = len(found["images"])
+            msg = "Feed loads" + (f' as "{found["title"]}"' if found["title"] else "")
+            msg += f"; {n} cover image{'s' if n != 1 else ''} found" if n else ", but no cover art was found in it"
+            out["feed"] = {"ok": True, "title": found["title"], "images": found["images"], "message": msg}
+        except Exception as e:
+            out["feed"] = {"ok": False, "images": [], "message": f"Feed could not be read: {describe(e)}"}
+    else:
+        out["feed"] = {"ok": None, "images": [], "message": "Not a feed URL, so the feed itself is not checked"}
+    if not op3_token:
+        out["op3"] = {"ok": False, "message": "No OP3 token is set"}
+        return out
+    try:
+        info = await lookup_show(client, ident, {"Authorization": "Bearer " + op3_token})
+        out["op3"] = {"ok": True, "title": info.get("title"), "message": "OP3 accepted the token and found the show"
+                      + (f" ({info['title']})" if info.get("title") else "")}
+    except Exception as e:
+        status = getattr(getattr(e, "response", None), "status_code", None)
+        if status in (401, 403):
+            msg = "OP3 rejected the token. Check it at https://op3.dev/api/keys"
+        elif status == 404:
+            msg = "OP3 has no show for this address. Check the feed URL, or the show may not have had a download through OP3 yet"
+        else:
+            msg = f"OP3 lookup failed: {describe(e)}"
+        out["op3"] = {"ok": False, "message": msg}
+    return out
 
 
 async def op3_downloads(client, uuid, headers, since):
@@ -196,29 +248,34 @@ async def fetch_show(client, show, op3_token, prev_lifetime=None):
         try:
             out.append((source, kind, 1, await fn()))
         except Exception as e:
-            log.warning("%s %s/%s failed: %s", show["name"], source, kind, describe(e))
+            log.warning("%s %s/%s failed: %s", show.get("name"), source, kind, describe(e))
             out.append((source, kind, 0, describe(e)))
 
     ident = (show.get("feed_url") or "").strip()
     if not ident:
-        return [("op3", "show", 0, "feed_url is missing in config.json")]
+        return [("op3", "show", 0, "feed_url is missing")]
     if is_url(ident):  # cover art is read from the feed, which needs its web address
         await run("feed", "info", lambda: feed_info(client, ident))
     if not op3_token:
-        return out + [("op3", "show", 0, "op3_token is missing in config.json")]
+        return out + [("op3", "show", 0, "op3_token is missing")]
 
     h = {"Authorization": "Bearer " + op3_token}
     try:
         info = await lookup_show(client, ident, h)
         uuid = info["showUuid"]
     except Exception as e:
-        log.warning("%s op3/show failed: %s", show["name"], describe(e))
+        log.warning("%s op3/show failed: %s", show.get("name"), describe(e))
         return out + [("op3", "show", 0, f"OP3 lookup failed: {describe(e)}")]
     out.append(("op3", "show", 1, info))
 
     since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)).date()
     await run("op3", "downloads", lambda: op3_downloads(client, uuid, h, since))
-    await run("op3", "lifetime", lambda: op3_lifetime(client, uuid, h, prev_lifetime, since))
+    if prev_lifetime and prev_lifetime.get("uuid") not in (None, uuid):
+        prev_lifetime = None  # the feed now points at a different OP3 show: count again from scratch
+
+    async def lifetime():
+        return {**await op3_lifetime(client, uuid, h, prev_lifetime, since), "uuid": uuid}
+    await run("op3", "lifetime", lifetime)
     await run("op3", "episodes", lambda: get(client, f"{OP3}/queries/episode-download-counts", params={"showUuid": uuid}, headers=h))
     await run("op3", "apps", lambda: get(client, f"{OP3}/queries/top-apps-for-show", params={"showUuid": uuid}, headers=h))
     return out
