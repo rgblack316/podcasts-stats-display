@@ -9,7 +9,7 @@
 *{box-sizing:border-box;margin:0;padding:0}
 html{font-size:calc(100vw / 96);background:var(--ink);color:var(--text);cursor:none}
 body{font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;height:100vh;overflow:hidden;
-  padding:1.6rem 2.4rem;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr auto;gap:1.4rem}
+  padding:1.6rem 2.4rem 2.6rem;display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto 1fr auto;gap:1.4rem}
 header{display:flex;align-items:center;gap:1.2rem}
 header img{width:4rem;height:4rem;border-radius:.5rem;object-fit:cover}
 h1{font-size:2.4rem;font-weight:600;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -48,7 +48,7 @@ li i::after{content:"";position:absolute;inset:0;width:var(--w);background:var(-
 .issues li{display:block;font-size:1.3rem;line-height:1.35;padding:.45rem 0}
 .issues li b{font-weight:600}
 .issues p{font-size:1.2rem;color:var(--mute);margin-top:1.4rem}
-.status{position:fixed;right:2.4rem;bottom:.5rem;max-width:65vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.9rem;color:var(--mute)}
+.status{position:fixed;right:2.4rem;bottom:.5rem;max-width:75vw;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:1rem;color:var(--mute)}
 .status.warn{color:var(--signal)}
 @media (prefers-reduced-motion:reduce){.bar{animation:none}}
 </style>
@@ -102,6 +102,13 @@ let regionNames = null;
 try { regionNames = new Intl.DisplayNames(["en"], { type: "region" }); } catch (e) {}
 const country = c => { try { return (regionNames && regionNames.of(c)) || c; } catch (e) { return c; } };
 
+// "Sat, Oct 24, 10:04 AM (12 min ago)"
+function stamp(t) {
+  const mins = Math.max(0, Math.round((Date.now() / 1000 - t) / 60));
+  const ago = mins < 1 ? "just now" : mins < 60 ? mins + " min ago" : mins < 2880 ? Math.round(mins / 60) + " h ago" : Math.round(mins / 1440) + " days ago";
+  return new Date(t * 1000).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }) + " (" + ago + ")";
+}
+
 function fit() {
   for (const b of document.querySelectorAll(".nums b")) {
     b.style.fontSize = "";
@@ -153,13 +160,13 @@ function render() {
   }
   $("lists").replaceChildren(list("Top episodes, 30 days", s.episodes), list("Podcast apps, 3 months", s.apps),
     list("Countries, 30 days", s.countries.map(r => ({ label: country(r.label), value: r.value }))));
-  const age = Date.now() / 1000 - data.updated, stale = !data.updated || age > data.interval_hours * 7200;
+  const when = s.updated || 0, age = Date.now() / 1000 - when, stale = !when || age > (s.interval_hours || data.interval_hours) * 7200;
   const st = $("status");
   st.className = "status" + (stale || failed || s.problem ? " warn" : "");
   st.textContent = failed ? "Can't reach the stats server. Retrying." :
     s.problem ? s.name + ": " + s.problem :
-    stale ? "Data is out of date. Check the server logs." :
-    "Updated " + new Date(data.updated * 1000).toLocaleString([], { weekday: "short", hour: "numeric", minute: "2-digit" });
+    stale ? (when ? "Last updated " + stamp(when) + ". Data is out of date; check the server logs." : "Not updated yet") :
+    "Last updated " + stamp(when);
   st.title = st.textContent;
 }
 
