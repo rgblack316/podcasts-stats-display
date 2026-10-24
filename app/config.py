@@ -6,6 +6,8 @@ doesn't stop the others from working. Each problem is {level, path, message, sho
 import copy, hashlib, json, logging, os, re, uuid
 from urllib.parse import urlsplit
 
+from . import schedule
+
 log = logging.getLogger("stats.config")
 
 DEFAULTS = {"interval_hours": 6, "slide_seconds": 60, "reload_minutes": 15}
@@ -91,6 +93,16 @@ def check(raw):
 
     for key in DEFAULTS:
         cfg[key] = check_number(raw, key, probs)
+    tzname = raw.get("timezone")
+    cfg["timezone"] = schedule.default_zone_name()
+    if isinstance(tzname, str) and tzname.strip():
+        if schedule.zone(tzname.strip()):
+            cfg["timezone"] = tzname.strip()
+        else:
+            probs.append(problem("warning", "timezone", f"timezone \"{tzname.strip()[:40]}\" is not a known time zone name "
+                                 f"(use something like America/New_York); using {cfg['timezone']}"))
+    elif tzname not in (None, ""):
+        probs.append(problem("warning", "timezone", f"timezone must be text such as America/New_York; using {cfg['timezone']}"))
     if "podhome_api_key" in raw:
         probs.append(problem("warning", "podhome_api_key", "podhome_api_key is no longer used; you can delete it"))
 
@@ -166,6 +178,28 @@ def check(raw):
                 sp.append(problem("error", p + ".image_url", "image_url " + msg, label))
                 image = ""
         every = check_number(s, "interval_hours", sp, label, p + ".", required_default=False)
+        start = s.get("start_time")
+        if start in (None, ""):
+            start = ""
+        elif schedule.parse_hhmm(start) is None:
+            sp.append(problem("warning", p + ".start_time", "start_time must look like 06:30 (24-hour); ignored", label))
+            start = ""
+        else:
+            start = schedule.fmt_hhmm(schedule.parse_hhmm(start))
+        times, raw_times = [], s.get("times")
+        if raw_times not in (None, ""):
+            if not isinstance(raw_times, list):
+                sp.append(problem("warning", p + ".times", "times must be a list like [\"06:00\", \"18:00\"]; ignored", label))
+            else:
+                for t in raw_times:
+                    m = schedule.parse_hhmm(t)
+                    if m is None:
+                        sp.append(problem("warning", p + ".times", f"time \"{str(t)[:12]}\" must look like 06:30 (24-hour); ignored", label))
+                    elif schedule.fmt_hhmm(m) not in times:
+                        times.append(schedule.fmt_hhmm(m))
+                if len(times) > schedule.MAX_TIMES:
+                    sp.append(problem("warning", p + ".times", f"at most {schedule.MAX_TIMES} times per day; extra ones ignored", label))
+                times = sorted(times)[:schedule.MAX_TIMES]
         sid = s.get("id")
         if sid is None or sid == "":
             sid = name  # shows from older configs keep the name as their id, so stored data stays attached
@@ -179,7 +213,7 @@ def check(raw):
         valid = not any(x["level"] == "error" for x in sp) and bool(sid) and bool(name)
         probs.extend(sp)
         cfg["shows"].append({"id": sid, "name": name, "feed_url": ident, "image_url": image,
-                             "interval_hours": every, "valid": valid, "index": i})
+                             "interval_hours": every, "start_time": start, "times": times, "valid": valid, "index": i})
     return cfg, probs
 
 
@@ -190,6 +224,8 @@ def serialize(raw):
         for k in DEFAULTS:
             if k in raw and raw[k] is not None:
                 out[k] = raw[k]
+        if raw.get("timezone"):
+            out["timezone"] = raw["timezone"]
         out["op3_token"] = raw.get("op3_token", "")
         out["shows"] = []
         for s in raw.get("shows") if isinstance(raw.get("shows"), list) else []:
@@ -200,6 +236,10 @@ def serialize(raw):
                 item["image_url"] = s["image_url"]
             if s.get("interval_hours") not in (None, ""):
                 item["interval_hours"] = s["interval_hours"]
+            if s.get("start_time"):
+                item["start_time"] = s["start_time"]
+            if s.get("times"):
+                item["times"] = s["times"]
             out["shows"].append(item)
     return out
 

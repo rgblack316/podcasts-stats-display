@@ -16,7 +16,7 @@ p{margin:.3rem 0}
 .mute{color:var(--mute);font-size:.9rem}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:.6rem;padding:1rem;margin-bottom:1rem}
 label{display:block;font-size:.85rem;color:var(--mute);margin:.7rem 0 .2rem}
-input[type=text],input[type=password],input[type=number],input[type=url]{width:100%;padding:.55rem .65rem;background:var(--ink);color:var(--text);border:1px solid var(--line);border-radius:.4rem;font:inherit}
+select,input[type=time],input[type=text],input[type=password],input[type=number],input[type=url]{width:100%;padding:.55rem .65rem;background:var(--ink);color:var(--text);border:1px solid var(--line);border-radius:.4rem;font:inherit}
 input:focus,button:focus-visible{outline:2px solid var(--signal);outline-offset:1px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(13rem,1fr));gap:0 1rem}
 button{font:inherit;padding:.5rem .9rem;border-radius:.4rem;border:1px solid var(--line);background:var(--panel);color:var(--text);cursor:pointer}
@@ -200,6 +200,27 @@ function showCard(s, i) {
   };
   draw();
 
+  const schedBox = h("div");
+  const drawSched = () => {
+    const mode = (s.times && s.times.length) || s._mode === "times" ? "times" : (s.start_time || s._mode === "start") ? "start" : "auto";
+    const sel = h("select", {}, h("option", { value: "auto" }, "Automatic (every N hours, spaced out)"),
+      h("option", { value: "start" }, "Every N hours, starting at a chosen time"), h("option", { value: "times" }, "At fixed times each day"));
+    sel.value = mode;
+    sel.onchange = () => { s._mode = sel.value; if (sel.value !== "start") s.start_time = ""; if (sel.value !== "times") s.times = []; markDirty(); drawSched(); };
+    let extra = null;
+    if (mode === "start") {
+      const t = h("input", { type: "time", value: s.start_time || "" });
+      t.oninput = () => { s.start_time = t.value; markDirty(); };
+      extra = h("div", {}, h("label", {}, "Start time (24-hour, " + state.settings.timezone + "). Polls at this time, then every " + (s.interval_hours || state.settings.interval_hours) + " hours."), t);
+    } else if (mode === "times") {
+      const t = h("input", { type: "text", placeholder: "06:00, 18:30", value: (s.times || []).join(", ") });
+      t.oninput = () => { s.times = t.value.split(/[\s,;]+/).filter(Boolean); markDirty(); };
+      extra = h("div", {}, h("label", {}, "Times each day, 24-hour, separated by commas (" + state.settings.timezone + ")"), t);
+    }
+    schedBox.replaceChildren(h("label", {}, "Schedule"), sel, extra);
+  };
+  drawSched();
+
   const up = h("button", { type: "button", title: "Move up", disabled: i === 0 }, "↑");
   const dn = h("button", { type: "button", title: "Move down", disabled: i === state.shows.length - 1 }, "↓");
   up.onclick = () => move(i, -1); dn.onclick = () => move(i, 1);
@@ -215,6 +236,7 @@ function showCard(s, i) {
       field("Display name", s.name, v => set("name", v)),
       numField("Poll every (hours, blank = " + state.settings.interval_hours + ")", s.interval_hours, v => set("interval_hours", v), lim)),
     field("RSS feed URL (or podcast GUID / OP3 show ID)", s.feed_url, v => set("feed_url", v), { placeholder: "https://example.com/feed.xml" }),
+    schedBox,
     h("label", {}, "Artwork"), artBox,
     h("div", { class: "row" }, test), testBox);
 }
@@ -227,6 +249,11 @@ function render() {
   const L = state.limits;
   const tokenIn = h("input", { type: "password", autocomplete: "off", placeholder: state.token_set ? "Saved (" + state.token_hint + "). Type to replace." : "Paste your OP3 API token" });
   tokenIn.oninput = () => { state.tokenInput = tokenIn.value; markDirty(); };
+  const tzIn = h("input", { type: "text", value: state.settings.timezone || "", placeholder: "America/New_York" });
+  tzIn.oninput = () => { state.settings.timezone = tzIn.value.trim(); markDirty(); };
+  const browserTz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) { return ""; } })();
+  const tzBtn = browserTz && browserTz !== state.settings.timezone ? h("button", { type: "button", style: "margin-top:.4rem" }, "Use this browser's: " + browserTz) : null;
+  if (tzBtn) tzBtn.onclick = () => { state.settings.timezone = browserTz; markDirty(); render(); };
   const add = h("button", { type: "button" }, "+ Add a show");
   add.onclick = () => { state.shows.push({ id: "", name: "", feed_url: "", image_url: "", interval_hours: null, feed_images: [], _new: true }); markDirty(); render(); window.scrollTo(0, document.body.scrollHeight); };
   const pwBtn = h("button", { type: "button" }, "Change password"), outBtn = h("button", { type: "button" }, "Sign out");
@@ -242,7 +269,8 @@ function render() {
       h("div", { class: "grid" },
         numField("Poll OP3 every (hours)", state.settings.interval_hours, v => { state.settings.interval_hours = v; }, L.interval_hours, state.defaults.interval_hours),
         numField("Seconds each show stays on screen", state.settings.slide_seconds, v => { state.settings.slide_seconds = v; }, L.slide_seconds, state.defaults.slide_seconds),
-        numField("Page re-reads data every (minutes)", state.settings.reload_minutes, v => { state.settings.reload_minutes = v; }, L.reload_minutes, state.defaults.reload_minutes))),
+        numField("Page re-reads data every (minutes)", state.settings.reload_minutes, v => { state.settings.reload_minutes = v; }, L.reload_minutes, state.defaults.reload_minutes)),
+      h("div", {}, h("label", {}, "Time zone for show schedules (e.g. America/New_York)"), tzIn, tzBtn)),
     ...state.shows.map(showCard),
     h("div", { class: "row" }, add),
     h("div", { class: "row end" }, pwBtn, outBtn)];
@@ -259,9 +287,9 @@ async function changePassword() {
 async function save() {
   const btn = document.getElementById("save"); btn.disabled = true;
   const cfg = {
-    interval_hours: state.settings.interval_hours, slide_seconds: state.settings.slide_seconds, reload_minutes: state.settings.reload_minutes,
+    timezone: state.settings.timezone, interval_hours: state.settings.interval_hours, slide_seconds: state.settings.slide_seconds, reload_minutes: state.settings.reload_minutes,
     op3_token: state.tokenInput,
-    shows: state.shows.map(s => ({ id: s.id || undefined, name: s.name, feed_url: s.feed_url, image_url: s.image_url || undefined, interval_hours: s.interval_hours }))
+    shows: state.shows.map(s => ({ id: s.id || undefined, name: s.name, feed_url: s.feed_url, image_url: s.image_url || undefined, interval_hours: s.interval_hours, start_time: s.start_time || undefined, times: s.times && s.times.length ? s.times : undefined }))
   };
   try {
     const r = await api("PUT", "/api/admin/config", { config: cfg, version: state.version });

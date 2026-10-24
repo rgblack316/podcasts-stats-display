@@ -1,13 +1,14 @@
 import asyncio, json, logging, os, re, secrets, sqlite3, time
 from contextlib import asynccontextmanager
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import config as cfgmod, fetch, shape
+from . import config as cfgmod, fetch, schedule, shape
 from .auth import SESSION_SECONDS, Auth
 
 logging.basicConfig(level=logging.INFO)
@@ -109,6 +110,10 @@ def due_in(c, s, cfg, now):
     # Timed on the "lifetime" snapshot, which only exists in the current data format, so data left
     # by an older version triggers an immediate refresh.
     due = last_ok + every
+    sch = schedule.slots(s, every / 3600, ZoneInfo(cfg["timezone"]), now)
+    if sch:  # a start time or fixed times: due at the latest slot that hasn't been polled yet
+        prev, nxt = sch
+        due = prev if max(last_ok, last_try) < prev else nxt
     if last_try > last_ok:  # the last attempt did not complete: try again sooner
         due = min(due, last_try + RETRY_FAILED)
     life = latest(c, s["id"], "op3", "lifetime")
@@ -365,13 +370,14 @@ def admin_config(request: Request):
         for s in cfg["shows"]:
             at = c.execute("SELECT MAX(at) FROM snapshots WHERE show=? AND ok=1", (s["id"],)).fetchone()[0]
             shows.append({"id": s["id"], "name": s["name"], "feed_url": s["feed_url"], "image_url": s["image_url"],
-                          "interval_hours": s["interval_hours"], "valid": s["valid"], "updated": at,
+                          "interval_hours": s["interval_hours"], "start_time": s["start_time"], "times": s["times"],
+                          "valid": s["valid"], "updated": at,
                           "error": last_error(c, s["id"]),
                           "feed_images": (latest(c, s["id"], "feed", "info") or {}).get("images") or []})
     finally:
         c.close()
     return {"version": version, "problems": probs,
-            "settings": {k: cfg[k] for k in cfgmod.DEFAULTS}, "defaults": cfgmod.DEFAULTS, "limits": cfgmod.LIMITS,
+            "settings": {**{k: cfg[k] for k in cfgmod.DEFAULTS}, "timezone": cfg["timezone"]}, "defaults": cfgmod.DEFAULTS, "limits": cfgmod.LIMITS,
             "token_set": cfg["token_ok"], "token_hint": ("…" + cfg["op3_token"][-4:]) if cfg["token_ok"] else "",
             "shows": shows, "file_ok": raw is not None}
 

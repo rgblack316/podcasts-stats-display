@@ -11,7 +11,7 @@ Polls OP3 (every 6 hours by default) and shows each podcast in rotation on a kio
 3. The dashboard is at `http://<vm-ip>:8080`. New shows are polled as soon as you save.
 4. To upgrade later, run the same command again (or `./scripts/update.sh`). Your `data/` folder is kept.
 
-**Settings page** (`/settings`, protected by your password): add, remove and reorder shows; edit display names; choose artwork (automatic from the feed, one of the images found in the feed, an image address, or an uploaded PNG/JPEG/GIF/WebP up to 5 MB); set the OP3 poll interval (globally and per show), how many seconds each show stays on screen, and how often the page re-reads data; **Test connection** checks a show's feed, your OP3 token and OP3's record of the show before you save; **Refresh data now** polls immediately.
+**Settings page** (`/settings`, protected by your password): add, remove and reorder shows; edit display names; choose artwork (automatic from the feed, one of the images found in the feed, an image address, or an uploaded PNG/JPEG/GIF/WebP up to 5 MB); set the OP3 poll interval and schedule (globally and per show), how many seconds each show stays on screen, and how often the page re-reads data; **Test connection** checks a show's feed, your OP3 token and OP3's record of the show before you save; **Refresh data now** polls immediately.
 - Forgot the password, or lost the setup code? Delete `data/admin.json` and run `sudo docker compose restart`; a new setup code is printed in `sudo docker compose logs | grep "SETUP CODE"` and kept in `data/setup-code.txt` until used.
 - The password is stored only as a salted hash. Sign-in is rate limited (5 wrong tries locks that address for 15 minutes). The app is meant for your home network; don't expose port 8080 to the internet.
 - Cover art is read from the feed (`itunes:image`, then `podcast:image`, then `image/url`) unless you pick something else. A podcast:guid in place of a feed URL works for the stats, but cover art then needs a chosen image.
@@ -30,6 +30,8 @@ Polls OP3 (every 6 hours by default) and shows each podcast in rotation on a kio
 
 **Display device (Ubuntu Desktop):**
 `curl -fsSL https://raw.githubusercontent.com/rgblack316/podcasts-stats-display/main/kiosk/setup-kiosk.sh | bash -s -- http://<vm-ip>:8080`, then reboot.
+
+**Per-show schedule:** each show can use *Automatic* (every N hours, spaced out), *Every N hours starting at a chosen time* (e.g. 00:20, 06:20, 12:20...), or *Fixed times each day* (e.g. `06:00, 18:30`). Times are 24-hour in the **time zone** set under General (default: the server's `TZ`, else UTC). If a slot was missed (app was down), the show is polled once when it comes back. In `config.json`: `"timezone"`, and per show `"start_time"` or `"times"`.
 
 **Rate limits:** shows are polled one at a time, at least 2 minutes apart (so each keeps its own slot in the cycle), requests to OP3 are spaced out, and a `429 slow down` is waited out (honouring `Retry-After`) and retried. After a show's poll fails it is tried again in 30 minutes. So "Refresh data now" with several shows takes a couple of minutes per show.
 
