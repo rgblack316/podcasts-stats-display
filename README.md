@@ -31,6 +31,8 @@ Polls OP3 (every 6 hours by default) and shows each podcast in rotation on a kio
 **Display device (Ubuntu Desktop):**
 `curl -fsSL https://raw.githubusercontent.com/rgblack316/podcasts-stats-display/main/kiosk/setup-kiosk.sh | bash -s -- http://<vm-ip>:8080`, then reboot.
 
+**Rate limits:** shows are polled one at a time, at least 2 minutes apart (so each keeps its own slot in the cycle), requests to OP3 are spaced out, and a `429 slow down` is waited out (honouring `Retry-After`) and retried. After a show's poll fails it is tried again in 30 minutes. So "Refresh data now" with several shows takes a couple of minutes per show.
+
 **Checking data:** `http://<vm-ip>:8080/api/raw/<Show Name>` shows the raw API responses;
 `curl -X POST http://<vm-ip>:8080/api/refresh` fetches now; `sudo docker compose logs -f` for logs.
 Lifetime downloads: the first poll counts the show's whole history one month at a time and saves a running total; later polls add only the days leaving the 30-day window (a few polls' worth of progress is kept if one fails). Episode lifetime figures are OP3's own `downloadsAll`.

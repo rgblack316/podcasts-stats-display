@@ -1,5 +1,5 @@
 """Pulls data from OP3 for one show. Returns a list of (source, kind, ok, payload)."""
-import base64, datetime as dt, logging
+import asyncio, base64, datetime as dt, logging, time
 import xml.etree.ElementTree as ET
 
 log = logging.getLogger("stats.fetch")
@@ -51,8 +51,34 @@ async def lookup_show(client, ident, headers):
                 raise
 
 
+OP3_GAP = 0.5      # seconds between requests to OP3
+RETRIES_429 = 3    # how often a "429 slow down" is waited out and retried
+_last_op3 = 0.0
+
+
+def retry_delay(r, attempt):
+    """Seconds to wait after a 429: OP3's Retry-After if it sent one, else 5, 10, 20, capped at 60."""
+    try:
+        return min(max(float(r.headers.get("Retry-After")), 1), 60)
+    except (AttributeError, TypeError, ValueError):
+        return min(5 * 2 ** attempt, 60)
+
+
 async def get(client, url, **kw):
-    r = await client.get(url, **kw)
+    """GET json. OP3 requests are spaced out, and a 429 is waited out and retried a few times."""
+    global _last_op3
+    for attempt in range(RETRIES_429 + 1):
+        if url.startswith(OP3):
+            wait = _last_op3 + OP3_GAP - time.monotonic()
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _last_op3 = time.monotonic()
+        r = await client.get(url, **kw)
+        if r.status_code != 429 or attempt == RETRIES_429:
+            break
+        delay = retry_delay(r, attempt)
+        log.warning("OP3 said slow down (429); waiting %ds", delay)
+        await asyncio.sleep(delay)
     r.raise_for_status()
     return r.json()
 

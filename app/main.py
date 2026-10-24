@@ -19,6 +19,8 @@ COOKIE = "psd_session"
 MAX_UPLOAD = 5_000_000
 RETRY_FAILED = 1800   # seconds before a show whose last poll failed is tried again
 RETRY_BACKFILL = 600  # seconds before an unfinished lifetime count carries on
+SHOW_GAP = 120        # minimum seconds between polling one show and the next, so OP3 isn't hit in a burst
+last_poll = 0.0       # when the last show poll finished
 
 _lock = asyncio.Lock()
 WAKE = asyncio.Event()  # set to make the scheduler look at the config again
@@ -116,6 +118,7 @@ def due_in(c, s, cfg, now):
 
 
 async def loop():
+    global last_poll
     while True:
         try:
             cfg, _ = store.get()
@@ -132,7 +135,15 @@ async def loop():
             finally:
                 c.close()
             if due:
-                await refresh(set(due))
+                # One show at a time, spaced out. Each show then keeps its own slot in the cycle
+                # instead of all of them hitting OP3 together.
+                wait = last_poll + SHOW_GAP - time.time()
+                if wait > 0:
+                    await asyncio.sleep(wait)
+                    continue
+                first = min(due, key=lambda i: attempted.get(i, 0))
+                await refresh({first})
+                last_poll = time.time()
                 continue
             WAKE.clear()
             try:
