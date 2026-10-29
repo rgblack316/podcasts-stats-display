@@ -13,6 +13,7 @@ PAGE_SIZE = 10000
 BACKFILL_PAGE_SIZE = 20000   # the API maximum
 MAX_BACKFILL_PAGES = 500      # per one-month window
 OP3_EPOCH = dt.date(2021, 1, 1)  # earliest date searched for a show's first download
+COUNT_VERSION = OP3_EPOCH.isoformat() + "+ts"  # changes when how the total is counted changes: totals saved with another value are recounted
 RECOUNT_DAYS = 30  # the saved lifetime total is counted again from scratch this often, to pick up OP3 corrections
 
 
@@ -191,7 +192,7 @@ async def op3_downloads(client, uuid, headers, since):
     days, countries, listeners = {}, {}, set()
     total, token, truncated = 0, None, False
     for _ in range(MAX_PAGES):
-        params = {"start": since.isoformat(), "format": "json", "limit": str(PAGE_SIZE)}
+        params = {"start": ts(since.isoformat()), "format": "json", "limit": str(PAGE_SIZE)}
         if token:
             params["continuationToken"] = token
         d = await get(client, f"{OP3}/downloads/show/{uuid}", params=params, headers=headers)
@@ -215,6 +216,12 @@ async def op3_downloads(client, uuid, headers, since):
             "listeners": len(listeners), "truncated": truncated}
 
 
+def ts(d):
+    """A date as the start of that UTC day, as a full timestamp. Date-only start/end values are not
+    used: a timestamp leaves no doubt that `end` is a moment, so the day it names isn't counted twice."""
+    return f"{d}T00:00:00Z"
+
+
 def next_month(d):
     return (d.replace(day=1) + dt.timedelta(days=32)).replace(day=1)
 
@@ -223,7 +230,7 @@ async def count_rows(client, uuid, headers, start, end):
     """Number of downloads in [start, end) (date strings; start inclusive, end exclusive)."""
     count, token = 0, None
     for _ in range(MAX_BACKFILL_PAGES):
-        params = {"start": start, "end": end, "format": "json", "limit": str(BACKFILL_PAGE_SIZE)}
+        params = {"start": ts(start), "end": ts(end), "format": "json", "limit": str(BACKFILL_PAGE_SIZE)}
         if token:
             params["continuationToken"] = token
         d = await get(client, f"{OP3}/downloads/show/{uuid}", params=params, headers=headers)
@@ -235,7 +242,7 @@ async def count_rows(client, uuid, headers, start, end):
 
 
 async def first_download_date(client, uuid, headers, before):
-    params = {"start": OP3_EPOCH.isoformat(), "end": before.isoformat(), "format": "json", "limit": "1"}
+    params = {"start": ts(OP3_EPOCH.isoformat()), "end": ts(before.isoformat()), "format": "json", "limit": "1"}
     d = await get(client, f"{OP3}/downloads/show/{uuid}", params=params, headers=headers)
     rows = d.get("rows", []) if isinstance(d, dict) else d
     return dt.date.fromisoformat(str(rows[0]["time"])[:10]) if rows else None
@@ -253,7 +260,7 @@ async def op3_lifetime(client, uuid, headers, prev, cutoff):
         total, through = int(prev["total"]), dt.date.fromisoformat(prev["through"])
         started = int(prev["started"])
         # A total counted from a different starting date, or long ago, is counted again from scratch.
-        if prev.get("epoch") != OP3_EPOCH.isoformat() or now - started > RECOUNT_DAYS * 86400:
+        if prev.get("epoch") != COUNT_VERSION or now - started > RECOUNT_DAYS * 86400:
             fallback = prev.get("fallback") or {"total": total, "through": prev["through"]}
             raise ValueError("recount")
     except (TypeError, KeyError, ValueError):
@@ -265,7 +272,7 @@ async def op3_lifetime(client, uuid, headers, prev, cutoff):
     if through is None:
         first = await first_download_date(client, uuid, headers, cutoff)
         if first is None:
-            return {"total": 0, "through": cutoff.isoformat(), "complete": True, "epoch": OP3_EPOCH.isoformat(), "started": started}
+            return {"total": 0, "through": cutoff.isoformat(), "complete": True, "epoch": COUNT_VERSION, "started": started}
         through = first.replace(day=1)
     first_through = through
     try:
@@ -278,7 +285,7 @@ async def op3_lifetime(client, uuid, headers, prev, cutoff):
             raise
         log.warning("lifetime backfill stopped at %s with %d counted; will resume", through, total, exc_info=True)
     out = {"total": total, "through": through.isoformat(), "complete": through >= cutoff,
-           "epoch": OP3_EPOCH.isoformat(), "started": started}
+           "epoch": COUNT_VERSION, "started": started}
     if not out["complete"] and (fallback or (prev or {}).get("fallback") and started == int((prev or {}).get("started", 0))):
         out["fallback"] = fallback or prev["fallback"]
     return out
