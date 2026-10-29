@@ -108,6 +108,9 @@ def lifetime(state, recent):
     30-day fetch was cut short."""
     if not state or not recent:
         return None
+    if not state.get("complete") and state.get("fallback"):
+        # a fresh recount is still running: keep showing the last complete total until it finishes
+        state = {**state["fallback"], "complete": False}
     since, through = recent.get("since"), state.get("through")
     if through and since and through > since and recent.get("days"):
         # the saved total already includes some of the days in the 30-day numbers: use only the later ones

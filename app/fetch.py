@@ -248,14 +248,20 @@ async def op3_lifetime(client, uuid, headers, prev, cutoff):
     ("complete": False) and the next poll carries on."""
     now = int(time.time())
     started = now
+    fallback = None  # the previous complete total, kept for display while a recount is under way
     try:
         total, through = int(prev["total"]), dt.date.fromisoformat(prev["through"])
         started = int(prev["started"])
         # A total counted from a different starting date, or long ago, is counted again from scratch.
         if prev.get("epoch") != OP3_EPOCH.isoformat() or now - started > RECOUNT_DAYS * 86400:
+            fallback = prev.get("fallback") or {"total": total, "through": prev["through"]}
             raise ValueError("recount")
     except (TypeError, KeyError, ValueError):
         total, through, started = 0, None, now
+        if fallback is None and isinstance(prev, dict) and prev.get("fallback"):
+            fallback = prev["fallback"]
+        if fallback is None and isinstance(prev, dict) and prev.get("complete") and "total" in prev and "through" in prev:
+            fallback = {"total": prev["total"], "through": prev["through"]}  # saved by an older version
     if through is None:
         first = await first_download_date(client, uuid, headers, cutoff)
         if first is None:
@@ -271,8 +277,11 @@ async def op3_lifetime(client, uuid, headers, prev, cutoff):
         if through == first_through:
             raise
         log.warning("lifetime backfill stopped at %s with %d counted; will resume", through, total, exc_info=True)
-    return {"total": total, "through": through.isoformat(), "complete": through >= cutoff,
-            "epoch": OP3_EPOCH.isoformat(), "started": started}
+    out = {"total": total, "through": through.isoformat(), "complete": through >= cutoff,
+           "epoch": OP3_EPOCH.isoformat(), "started": started}
+    if not out["complete"] and (fallback or (prev or {}).get("fallback") and started == int((prev or {}).get("started", 0))):
+        out["fallback"] = fallback or prev["fallback"]
+    return out
 
 
 async def fetch_show(client, show, op3_token, prev_lifetime=None):
