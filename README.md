@@ -39,6 +39,8 @@ Polls OP3 (every 6 hours by default) and shows each podcast in rotation on a kio
 `curl -X POST http://<vm-ip>:8080/api/refresh` fetches now; `sudo docker compose logs -f` for logs.
 Lifetime downloads: the first poll counts the show's whole history one month at a time and saves a running total; later polls add only the days leaving the 30-day window (a few polls' worth of progress is kept if one fails). Episode lifetime figures are OP3's own `downloadsAll`.
 
+The lifetime count looks back to 2021-01-01 and is counted again from scratch about every 30 days (the number shows as "≥" while that runs) to pick up any corrections OP3 makes to old records.
+
 To recount the show lifetime totals from scratch (the saved running total is otherwise trusted), run this on the server:
 ```bash
 sudo docker compose exec -T stats python - <<'EOF'

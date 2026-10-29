@@ -12,7 +12,8 @@ UA = {"User-Agent": "podcasts-stats-display/1.0"}
 PAGE_SIZE = 10000
 BACKFILL_PAGE_SIZE = 20000   # the API maximum
 MAX_BACKFILL_PAGES = 500      # per one-month window
-OP3_EPOCH = dt.date(2022, 9, 1)  # OP3 launched in September 2022
+OP3_EPOCH = dt.date(2021, 1, 1)  # earliest date searched for a show's first download
+RECOUNT_DAYS = 30  # the saved lifetime total is counted again from scratch this often, to pick up OP3 corrections
 
 
 def describe(e):
@@ -245,26 +246,33 @@ async def op3_lifetime(client, uuid, headers, prev, cutoff):
     show's first download, or resuming from `prev` ({"total", "through"}), so a later poll only counts
     the days that have just left the 30-day window. If it fails part-way, the progress is kept
     ("complete": False) and the next poll carries on."""
+    now = int(time.time())
+    started = now
     try:
         total, through = int(prev["total"]), dt.date.fromisoformat(prev["through"])
+        started = int(prev["started"])
+        # A total counted from a different starting date, or long ago, is counted again from scratch.
+        if prev.get("epoch") != OP3_EPOCH.isoformat() or now - started > RECOUNT_DAYS * 86400:
+            raise ValueError("recount")
     except (TypeError, KeyError, ValueError):
-        total, through = 0, None
+        total, through, started = 0, None, now
     if through is None:
         first = await first_download_date(client, uuid, headers, cutoff)
         if first is None:
-            return {"total": 0, "through": cutoff.isoformat(), "complete": True}
+            return {"total": 0, "through": cutoff.isoformat(), "complete": True, "epoch": OP3_EPOCH.isoformat(), "started": started}
         through = first.replace(day=1)
-    started = through
+    first_through = through
     try:
         while through < cutoff:
             nxt = min(next_month(through), cutoff)
             total += await count_rows(client, uuid, headers, through.isoformat(), nxt.isoformat())
             through = nxt
     except Exception:
-        if through == started:
+        if through == first_through:
             raise
         log.warning("lifetime backfill stopped at %s with %d counted; will resume", through, total, exc_info=True)
-    return {"total": total, "through": through.isoformat(), "complete": through >= cutoff}
+    return {"total": total, "through": through.isoformat(), "complete": through >= cutoff,
+            "epoch": OP3_EPOCH.isoformat(), "started": started}
 
 
 async def fetch_show(client, show, op3_token, prev_lifetime=None):
