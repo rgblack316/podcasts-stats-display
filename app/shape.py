@@ -100,12 +100,20 @@ def latest_episode(episodes, now=None):
 
 
 def lifetime(state, recent):
-    """Show lifetime downloads: everything before the 30-day window (the saved running total) plus the
-    last 30 days. `approx` is True when the saved total is unfinished or out of step with the 30-day
-    window, or the 30-day fetch was cut short, so the real figure is at least this."""
+    """Show lifetime downloads: the saved running total of everything before `state["through"]`, plus
+    the downloads from that date on. The two come from separate requests, so the 30-day numbers can be
+    from a different poll than the saved total (one of them failed last time). Days counted in both are
+    left out, so nothing is counted twice. `approx` is True when the real figure may be higher: the
+    saved total is unfinished or older than the 30-day numbers (days in between are unknown), or the
+    30-day fetch was cut short."""
     if not state or not recent:
         return None
-    exact = state.get("complete") and state.get("through") == recent.get("since") and not recent.get("truncated")
+    since, through = recent.get("since"), state.get("through")
+    if through and since and through > since and recent.get("days"):
+        # the saved total already includes some of the days in the 30-day numbers: use only the later ones
+        later = sum(n for day, n in recent["days"].items() if day >= through)
+        return {"value": state["total"] + later, "approx": not state.get("complete") or bool(recent.get("truncated"))}
+    exact = state.get("complete") and through == since and not recent.get("truncated")
     return {"value": state["total"] + recent["total"], "approx": not exact}
 
 
