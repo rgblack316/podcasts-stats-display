@@ -112,8 +112,10 @@ def lifetime(state, recent):
         # a fresh recount is still running: keep showing the last complete total until it finishes
         state = {**state["fallback"], "complete": False}
     since, through = recent.get("since"), state.get("through")
-    if through and since and through > since and recent.get("days"):
-        # the saved total already includes some of the days in the 30-day numbers: use only the later ones
+    start = recent.get("from") or since
+    if through and start and start <= through and recent.get("days") and (through != since or start != since):
+        # the per-day counts reach back to where the saved total stops (or the total already includes
+        # some of the days): use only the days from there on, so nothing is missed or counted twice
         later = sum(n for day, n in recent["days"].items() if day >= through)
         return {"value": state["total"] + later, "approx": not state.get("complete") or bool(recent.get("truncated"))}
     exact = state.get("complete") and through == since and not recent.get("truncated")

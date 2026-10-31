@@ -55,6 +55,8 @@ async def lookup_show(client, ident, headers):
 
 OP3_GAP = 0.5      # seconds between requests to OP3
 RETRIES_429 = 3    # how often a "429 slow down" is waited out and retried
+OP3_TIMEOUT = 120  # seconds to wait for OP3's download records, which can be slow on busy shows
+RETRIES_TIMEOUT = 1
 _last_op3 = 0.0
 
 
@@ -69,18 +71,30 @@ def retry_delay(r, attempt):
 async def get(client, url, **kw):
     """GET json. OP3 requests are spaced out, and a 429 is waited out and retried a few times."""
     global _last_op3
-    for attempt in range(RETRIES_429 + 1):
-        if url.startswith(OP3):
+    is_op3 = url.startswith(OP3)
+    if is_op3:
+        kw.setdefault("timeout", OP3_TIMEOUT)
+    attempt = timeouts = 0
+    while True:
+        if is_op3:
             wait = _last_op3 + OP3_GAP - time.monotonic()
             if wait > 0:
                 await asyncio.sleep(wait)
             _last_op3 = time.monotonic()
-        r = await client.get(url, **kw)
+        try:
+            r = await client.get(url, **kw)
+        except Exception as e:
+            if type(e).__name__.endswith("Timeout") and timeouts < RETRIES_TIMEOUT:
+                timeouts += 1
+                log.warning("OP3 took too long to answer; trying once more")
+                continue
+            raise
         if r.status_code != 429 or attempt == RETRIES_429:
             break
         delay = retry_delay(r, attempt)
         log.warning("OP3 said slow down (429); waiting %ds", delay)
         await asyncio.sleep(delay)
+        attempt += 1
     r.raise_for_status()
     return r.json()
 
@@ -187,21 +201,26 @@ async def test_show(client, ident, op3_token):
     return out
 
 
-async def op3_downloads(client, uuid, headers, since):
-    """Downloads from `since` (a date) until now, tallied per day and per country, plus distinct listeners."""
+async def op3_downloads(client, uuid, headers, since, read_from=None):
+    """Downloads from `since` (a date) until now, tallied per day and per country, plus distinct listeners.
+    With `read_from` (an earlier date) the per-day counts also cover the days before `since`, so the
+    lifetime total can be completed from them; the other figures are for `since` onward only."""
+    read_from = min(read_from or since, since)
     days, countries, listeners = {}, {}, set()
     total, token, truncated = 0, None, False
     for _ in range(MAX_PAGES):
-        params = {"start": ts(since.isoformat()), "format": "json", "limit": str(PAGE_SIZE)}
+        params = {"start": ts(read_from.isoformat()), "format": "json", "limit": str(PAGE_SIZE)}
         if token:
             params["continuationToken"] = token
         d = await get(client, f"{OP3}/downloads/show/{uuid}", params=params, headers=headers)
         rows = d.get("rows", []) if isinstance(d, dict) else d
         for r in rows:
-            total += 1
             day = str(r.get("time") or r.get("timestamp") or "")[:10]
             if day:
                 days[day] = days.get(day, 0) + 1
+            if day and day < since.isoformat():
+                continue
+            total += 1
             cc = r.get("countryCode")
             if cc:
                 countries[cc] = countries.get(cc, 0) + 1
@@ -213,7 +232,7 @@ async def op3_downloads(client, uuid, headers, since):
     else:
         truncated = True
     return {"total": total, "days": days, "countries": countries, "since": since.isoformat(),
-            "listeners": len(listeners), "truncated": truncated}
+            "from": read_from.isoformat(), "listeners": len(listeners), "truncated": truncated}
 
 
 def ts(d):
@@ -242,10 +261,18 @@ async def count_rows(client, uuid, headers, start, end):
 
 
 async def first_download_date(client, uuid, headers, before):
-    params = {"start": ts(OP3_EPOCH.isoformat()), "end": ts(before.isoformat()), "format": "json", "limit": "1"}
-    d = await get(client, f"{OP3}/downloads/show/{uuid}", params=params, headers=headers)
-    rows = d.get("rows", []) if isinstance(d, dict) else d
-    return dt.date.fromisoformat(str(rows[0]["time"])[:10]) if rows else None
+    """Date of the show's first download before `before`. Searches one year at a time, oldest first,
+    so each request is small and a show's whole history never has to be scanned in one go."""
+    start = OP3_EPOCH
+    while start < before:
+        end = min(dt.date(start.year + 1, 1, 1), before)
+        params = {"start": ts(start.isoformat()), "end": ts(end.isoformat()), "format": "json", "limit": "1"}
+        d = await get(client, f"{OP3}/downloads/show/{uuid}", params=params, headers=headers)
+        rows = d.get("rows", []) if isinstance(d, dict) else d
+        if rows:
+            return dt.date.fromisoformat(str(rows[0]["time"])[:10])
+        start = end
+    return None
 
 
 async def op3_lifetime(client, uuid, headers, prev, cutoff):
@@ -319,9 +346,19 @@ async def fetch_show(client, show, op3_token, prev_lifetime=None):
     out.append(("op3", "show", 1, info))
 
     since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=30)).date()
-    await run("op3", "downloads", lambda: op3_downloads(client, uuid, h, since))
     if prev_lifetime and prev_lifetime.get("uuid") not in (None, uuid):
         prev_lifetime = None  # the feed now points at a different OP3 show: count again from scratch
+    # If the saved lifetime total stops before the 30-day window (its last update failed), read the
+    # downloads from where it stops, so the gap is filled from the per-day counts.
+    read_from = None
+    saved = prev_lifetime and (prev_lifetime if prev_lifetime.get("complete") else prev_lifetime.get("fallback"))
+    try:
+        through = dt.date.fromisoformat(saved["through"])
+        if through < since and (since - through).days <= 60:
+            read_from = through
+    except (TypeError, KeyError, ValueError):
+        pass
+    await run("op3", "downloads", lambda: op3_downloads(client, uuid, h, since, read_from))
 
     async def lifetime():
         return {**await op3_lifetime(client, uuid, h, prev_lifetime, since), "uuid": uuid}
